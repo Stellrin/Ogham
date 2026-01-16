@@ -24,19 +24,24 @@ export const ImportButton: React.FC = () => {
       if (selected && typeof selected === 'string') {
         setImporting(true);
 
-        const result = await invoke<ImportResult>('import_epub_command', {
-          filePath: selected,
-        });
+        try {
+          const result = await invoke<ImportResult>('import_epub_command', {
+            filePath: selected,
+          });
 
-        if (result.success && result.epubInfo) {
-          addEpub(result.epubInfo);
-        } else {
-          alert(result.error || '导入失败');
+          if (result.success && (result.epubInfo || result.epub_info)) {
+            addEpub((result.epubInfo || result.epub_info) as any);
+          } else {
+            alert(`导入失败: ${result.error || '未知错误'}`);
+          }
+        } catch (invokeError) {
+          const errorMsg = invokeError instanceof Error ? invokeError.message : String(invokeError);
+          alert(`调用后端失败: ${errorMsg}`);
         }
       }
     } catch (error) {
-      console.error('Failed to import EPUB:', error);
-      alert(`导入失败: ${error}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`导入失败: ${errorMessage}`);
     } finally {
       setImporting(false);
     }
@@ -56,6 +61,7 @@ export const ImportButton: React.FC = () => {
 
 interface ImportResult {
   success: boolean;
+  epub_info?: EpubInfo;
   epubInfo?: EpubInfo;
   error?: string;
 }
@@ -65,4 +71,5 @@ interface EpubInfo {
   name: string;
   path: string;
   loaded_at: number;
+  loadedAt?: number;
 }

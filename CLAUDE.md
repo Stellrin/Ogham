@@ -53,7 +53,7 @@ npm run tauri build    # 构建桌面应用
 
 ## 开发规范
 - 不需要向后兼容，请放心删除不必要的代码
-- 注意这是一个Tauri 桌面应用，调试时不要使用浏览器相关的 API（比如浏览器的开发者工具，console 等）
+- 注意这是一个Tauri 桌面应用，调试时不要使用浏览器相关的 API（比如浏览器的开发者工具，console 等），输出调试信息到终端或使用 Tauri 提供的日志功能
 
 ## EPUB 载入重构
 
@@ -86,12 +86,3 @@ OEBPS/
 - **基于 spine 顺序**：使用 OPF spine 中的 `<itemref>` 顺序作为阅读顺序
 - **识别特殊文件**：nav.xhtml、cover.xhtml 等通过 manifest properties 识别
 - **整理资源文件**：样式和图片整理到标准目录，但保持文件名不变
-
-### 任务追踪
-详细的任务进度和实施计划请查看：[`.claude/epub-refactor-tracker.md`](.claude/epub-refactor-tracker.md)
-
-### 关键改进
-- **统一结构**：标准化目录和文件命名
-- **完整功能**：导入、编辑、导出完整流程
-- **路径映射**：维护原始路径到标准路径的双向映射
-- **元数据管理**：独立的元数据编辑和管理

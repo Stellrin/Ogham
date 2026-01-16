@@ -35,11 +35,12 @@ pub fn import_epub(file_path: String) -> Result<EpubInfo, String> {
 
     // 检查文件扩展名
     match path.extension() {
-        Some(ext) if ext.eq_ignore_ascii_case("epub") => {
-            // 这是 EPUB 文件
+        Some(ext) if ext.eq_ignore_ascii_case("epub") => {}
+        Some(ext) => {
+            return Err(format!("文件扩展名不正确: {:?}, 期望: epub", ext));
         }
-        _ => {
-            return Err(format!("不是 EPUB 文件: {}", file_path));
+        None => {
+            return Err(format!("文件没有扩展名: {}", file_path));
         }
     }
 
@@ -86,17 +87,17 @@ fn chrono_timestamp() -> u64 {
 }
 
 #[tauri::command]
-pub async fn import_epub_command(file_path: String) -> Result<ImportResult, String> {
+pub async fn import_epub_command(file_path: String) -> ImportResult {
     match import_epub(file_path) {
-        Ok(epub_info) => Ok(ImportResult {
+        Ok(epub_info) => ImportResult {
             success: true,
             epub_info: Some(epub_info),
             error: None,
-        }),
-        Err(error) => Ok(ImportResult {
+        },
+        Err(error) => ImportResult {
             success: false,
             epub_info: None,
             error: Some(error),
-        }),
+        },
     }
 }

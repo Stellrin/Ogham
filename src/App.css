@@ -66,15 +66,18 @@ body {
 .app-sidebar {
   display: flex;
   flex-direction: column;
-  width: 300px;
-  min-width: 300px;
+  width: 280px;
+  min-width: 280px;
+  max-width: 280px;
   border-right: 1px solid #e0e0e0;
+  overflow-y: auto;
 }
 
 .sidebar-footer {
   padding: 16px;
   background-color: #fafafa;
   border-top: 1px solid #e0e0e0;
+  flex-shrink: 0;
 }
 
 .app-content {

@@ -1,0 +1,319 @@
+import React, { useRef, useEffect, useState } from 'react';
+import { useEpubStore } from '../store/epubStore';
+import './EpubReader.css';
+
+export const EpubReader: React.FC = () => {
+  const { epubs, selectedEpubId, readerState, loadChapterContent, setReaderState } =
+    useEpubStore();
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedEpub = epubs.find((e) => e.id === selectedEpubId);
+  const currentChapter = selectedEpub?.structure?.chapters.find(
+    (c) => c.path === readerState.currentChapterPath
+  );
+
+  // 当章节路径改变时加载章节内容
+  useEffect(() => {
+    if (readerState.currentChapterPath && !currentChapter?.content) {
+      loadChapter(readerState.currentChapterPath);
+    } else if (currentChapter?.content) {
+      renderContent(currentChapter.content.html);
+    }
+  }, [readerState.currentChapterPath, currentChapter?.content]);
+
+  // 当阅读器设置改变时重新渲染
+  useEffect(() => {
+    if (currentChapter?.content) {
+      renderContent(currentChapter.content.html);
+    }
+  }, [readerState.fontSize, readerState.fontFamily, readerState.lineHeight]);
+
+  const loadChapter = async (chapterPath: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      await loadChapterContent(chapterPath);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderContent = (html: string) => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const doc = iframe.contentDocument;
+    if (!doc) return;
+
+    const enhancedHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              padding: 20px;
+              font-family: ${readerState.fontFamily};
+              font-size: ${readerState.fontSize}px;
+              line-height: ${readerState.lineHeight};
+              color: #333;
+              background-color: #ffffff;
+            }
+            img {
+              max-width: 100%;
+              height: auto;
+              display: block;
+              margin: 10px auto;
+            }
+            p {
+              margin: 0.5em 0;
+            }
+            h1, h2, h3, h4, h5, h6 {
+              margin: 0.8em 0 0.4em;
+              line-height: 1.3;
+            }
+            a {
+              color: #4a90d9;
+              text-decoration: none;
+            }
+            a:hover {
+              text-decoration: underline;
+              cursor: pointer;
+            }
+          </style>
+        </head>
+        <body>
+          ${html}
+        </body>
+      </html>
+    `;
+
+    doc.open();
+    doc.write(enhancedHtml);
+    doc.close();
+
+    // 恢复滚动位置
+    if (readerState.scrollPosition > 0) {
+      setTimeout(() => {
+        if (doc.documentElement) {
+          doc.documentElement.scrollTop = readerState.scrollPosition;
+        }
+      }, 0);
+    }
+
+    // 添加事件监听
+    attachEventListeners();
+  };
+
+  const attachEventListeners = () => {
+    const iframe = iframeRef.current;
+    if (!iframe || !iframe.contentDocument) return;
+
+    // 监听点击事件处理内部链接
+    iframe.contentDocument.addEventListener('click', handleLinkClick);
+
+    // 监听滚动事件
+    iframe.contentDocument.addEventListener('scroll', handleScroll);
+  };
+
+  const handleLinkClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'A') {
+      const anchor = target as HTMLAnchorElement;
+      const href = anchor.getAttribute('href');
+
+      if (href && (href.startsWith('./') || href.startsWith('../') || href.endsWith('.html') || href.endsWith('.xhtml'))) {
+        event.preventDefault();
+        navigateToChapter(href);
+      } else if (href && href.startsWith('#')) {
+        // 处理页面内锚点跳转
+        event.preventDefault();
+        const iframe = iframeRef.current;
+        if (iframe?.contentDocument) {
+          const targetElement = iframe.contentDocument.querySelector(href);
+          if (targetElement) {
+            targetElement.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
+      }
+    }
+  };
+
+  const navigateToChapter = (href: string) => {
+    if (!selectedEpub?.structure) return;
+
+    // 解析相对路径
+    const basePath = readerState.currentChapterPath?.split('/').slice(0, -1).join('/') || 'OEBPS/Text';
+    const resolvedPath = resolvePath(basePath, href);
+
+    // 查找匹配的章节
+    const targetChapter = selectedEpub.structure.chapters.find((c) =>
+      c.path === resolvedPath || c.path.endsWith(href) || c.path.endsWith(href.replace('../', ''))
+    );
+
+    if (targetChapter) {
+      setReaderState({
+        currentChapterIndex: targetChapter.order,
+        currentChapterPath: targetChapter.path,
+        scrollPosition: 0,
+      });
+    }
+  };
+
+  const resolvePath = (basePath: string, href: string): string => {
+    const baseParts = basePath.split('/').filter((p) => p);
+    const hrefParts = href.split('/').filter((p) => p && p !== '.');
+
+    for (const part of hrefParts) {
+      if (part === '..') {
+        baseParts.pop();
+      } else {
+        baseParts.push(part);
+      }
+    }
+
+    return baseParts.join('/');
+  };
+
+  const handleScroll = () => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const scrollTop = iframe.contentDocument?.documentElement.scrollTop || 0;
+    setReaderState({ scrollPosition: scrollTop });
+  };
+
+  const handleFontSizeChange = (size: number) => {
+    setReaderState({ fontSize: size });
+  };
+
+  const selectedEpubHasChapters = selectedEpub?.structure?.chapters.length ?? 0;
+  const isFirstChapter = readerState.currentChapterIndex === 0;
+  const isLastChapter = readerState.currentChapterIndex >= selectedEpubHasChapters - 1;
+
+  return (
+    <div className="epub-reader">
+      {loading && (
+        <div className="reader-loading">
+          <span>加载中...</span>
+        </div>
+      )}
+      {error && (
+        <div className="reader-error">
+          <span>加载失败: {error}</span>
+        </div>
+      )}
+
+      {!selectedEpub && (
+        <div className="reader-empty">
+          <p>请选择一个 EPUB 文件</p>
+          <p className="hint">在左侧列表中选择以开始阅读</p>
+        </div>
+      )}
+
+      {selectedEpub && !readerState.currentChapterPath && (
+        <div className="reader-empty">
+          <p>请选择一个章节</p>
+          <p className="hint">在左侧结构树中点击章节开始阅读</p>
+        </div>
+      )}
+
+      {selectedEpub && readerState.currentChapterPath && (
+        <>
+          <iframe
+            ref={iframeRef}
+            className="reader-iframe"
+            sandbox="allow-same-origin allow-scripts"
+            title="EPUB Reader"
+          />
+          <ReaderControls
+            fontSize={readerState.fontSize}
+            onFontSizeChange={handleFontSizeChange}
+            onPrevChapter={() => {
+              if (!isFirstChapter) {
+                setReaderState({ currentChapterIndex: readerState.currentChapterIndex - 1 });
+              }
+            }}
+            onNextChapter={() => {
+              if (!isLastChapter) {
+                setReaderState({ currentChapterIndex: readerState.currentChapterIndex + 1 });
+              }
+            }}
+            isFirstChapter={isFirstChapter}
+            isLastChapter={isLastChapter}
+            chapterName={currentChapter?.name}
+          />
+        </>
+      )}
+    </div>
+  );
+};
+
+interface ReaderControlsProps {
+  fontSize: number;
+  onFontSizeChange: (size: number) => void;
+  onPrevChapter: () => void;
+  onNextChapter: () => void;
+  isFirstChapter: boolean;
+  isLastChapter: boolean;
+  chapterName?: string;
+}
+
+const ReaderControls: React.FC<ReaderControlsProps> = ({
+  fontSize,
+  onFontSizeChange,
+  onPrevChapter,
+  onNextChapter,
+  isFirstChapter,
+  isLastChapter,
+  chapterName,
+}) => {
+  return (
+    <div className="reader-controls">
+      <button
+        className="reader-nav-button"
+        onClick={onPrevChapter}
+        disabled={isFirstChapter}
+        title="上一章"
+      >
+        ← 上一章
+      </button>
+
+      <div className="reader-info">
+        <span className="reader-chapter-name">{chapterName || ''}</span>
+      </div>
+
+      <div className="reader-settings">
+        <select
+          value={fontSize}
+          onChange={(e) => onFontSizeChange(Number(e.target.value))}
+          className="font-size-select"
+          title="字体大小"
+        >
+          <option value="14">小</option>
+          <option value="16">中</option>
+          <option value="18">大</option>
+          <option value="20">特大</option>
+        </select>
+      </div>
+
+      <button
+        className="reader-nav-button"
+        onClick={onNextChapter}
+        disabled={isLastChapter}
+        title="下一章"
+      >
+        下一章 →
+      </button>
+    </div>
+  );
+};

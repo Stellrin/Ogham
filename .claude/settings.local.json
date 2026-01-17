@@ -5,7 +5,25 @@
       "Bash(npm run dev)",
       "Bash(taskkill:*)",
       "Bash(netstat:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Bash(cargo check:*)",
+      "Bash(npm run build:*)",
+      "Bash(cargo build:*)",
+      "Bash(npm run tauri:*)",
+      "Bash(ls:*)",
+      "Bash(cargo run:*)",
+      "Bash(python:*)",
+      "Bash(tr:*)",
+      "Bash(find:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo test:*)",
+      "Bash(cmd /c \"taskkill /PID 31344 /F\")",
+      "Bash(powershell:*)",
+      "Bash(dir:*)",
+      "Bash(Select-String -Pattern \"chapter-\")",
+      "Bash(timeout:*)"
     ]
   }
 }

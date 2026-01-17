@@ -1,7 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::Read;
+
+pub mod models;
+pub mod parser;
+pub mod extractor;
+
+pub use models::*;
+pub use parser::parse_epub;
+pub use extractor::{extract_chapter_content, convert_to_structure_result};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpubInfo {
@@ -100,4 +108,36 @@ pub async fn import_epub_command(file_path: String) -> ImportResult {
             error: Some(error),
         },
     }
+}
+
+/// 解析 EPUB 结构
+#[tauri::command]
+pub async fn parse_epub_structure_command(epub_path: String) -> Result<EpubStructureResult, String> {
+
+    let (parsed, opf_path) = parse_epub(&epub_path)
+        .map_err(|e| {
+            println!("[ERROR] EPUB 解析失败: {}", e);
+            e.to_string()
+        })?;
+
+    Ok(convert_to_structure_result(&parsed, &opf_path))
+}
+
+/// 获取章节内容（含嵌入的 Base64 资源）
+#[tauri::command]
+pub async fn get_chapter_content_command(
+    epub_path: String,
+    chapter_path: String,
+) -> Result<ChapterContent, String> {
+    // 首先解析 EPUB 获取 manifest（忽略 opf_path）
+    let (parsed, _) = parse_epub(&epub_path).map_err(|e| e.to_string())?;
+
+    extract_chapter_content(&epub_path, &chapter_path, &parsed.manifest)
+        .map_err(|e| e.to_string())
+}
+
+/// 测试命令 - 返回简单的字符串来验证 Tauri 命令是否工作
+#[tauri::command]
+pub async fn test_command() -> String {
+    "Test command works!".to_string()
 }

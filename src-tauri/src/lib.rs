@@ -13,7 +13,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            epub::import_epub_command
+            epub::import_epub_command,
+            epub::parse_epub_structure_command,
+            epub::get_chapter_content_command,
+            epub::test_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

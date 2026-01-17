@@ -1,10 +1,19 @@
 import React from 'react';
 import { useEpubStore } from '../store/epubStore';
+import type { Chapter } from '../store/epubStore';
 
 export const EpubStructureTree: React.FC = () => {
-  const { epubs, selectedEpubId } = useEpubStore();
+  const { epubs, selectedEpubId, readerState, setReaderState } = useEpubStore();
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
+
+  const handleChapterClick = (chapter: Chapter) => {
+    setReaderState({
+      currentChapterIndex: chapter.order,
+      currentChapterPath: chapter.path,
+      scrollPosition: 0,
+    });
+  };
 
   if (!selectedEpub) {
     return (
@@ -21,8 +30,18 @@ export const EpubStructureTree: React.FC = () => {
     return (
       <div className="structure-tree">
         <div className="structure-empty">
-          <p>结构尚未加载</p>
-          <p className="hint">{selectedEpub.name}</p>
+          {selectedEpub.structureError ? (
+            <>
+              <p className="error">加载失败</p>
+              <p className="hint error-message">{selectedEpub.structureError}</p>
+              <p className="hint">{selectedEpub.name}</p>
+            </>
+          ) : (
+            <>
+              <p>结构尚未加载</p>
+              <p className="hint">{selectedEpub.name}</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -74,15 +93,22 @@ export const EpubStructureTree: React.FC = () => {
             <span className="tree-label">Text/</span>
           </div>
           <div className="tree-children">
-            {structure.chapters.map((chapter) => (
-              <div key={chapter.id} className="tree-node tree-leaf">
-                <span className="tree-icon">📖</span>
-                <span className="tree-label file-name">{chapter.name}</span>
-                {chapter.name === 'cover.xhtml' && (
-                  <span className="tree-badge special">封面</span>
-                )}
-              </div>
-            ))}
+            {structure.chapters.map((chapter) => {
+              const isActive = chapter.path === readerState.currentChapterPath;
+              return (
+                <div
+                  key={chapter.id}
+                  className={`tree-node tree-leaf chapter-item ${isActive ? 'active' : ''}`}
+                  onClick={() => handleChapterClick(chapter)}
+                >
+                  <span className="tree-icon">📖</span>
+                  <span className="tree-label file-name">{chapter.name}</span>
+                  {chapter.name === 'cover.xhtml' && (
+                    <span className="tree-badge special">封面</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Styles/ */}

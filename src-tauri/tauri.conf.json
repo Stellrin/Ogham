@@ -12,13 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "ogham",
-        "width": 800,
-        "height": 600
+        "title": "Ogham - EPUB Reader",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';"
     }
   },
   "bundle": {

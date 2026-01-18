@@ -1,18 +1,49 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { useEpubStore } from '../store/epubStore';
+import { useEpubStore, Chapter, StandardChapter } from '../store/epubStore';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import './EpubReader.css';
 
+type CombinedChapter = Chapter | StandardChapter;
+
+// 获取章节路径的辅助函数
+const getChapterPath = (chapter: CombinedChapter): string => {
+  if ('path' in chapter) {
+    return chapter.path;
+  } else {
+    return chapter.standard_path;
+  }
+};
+
+// 获取章节名称的辅助函数
+const getChapterName = (chapter: CombinedChapter): string | undefined => {
+  if ('name' in chapter) {
+    return chapter.name;
+  } else {
+    return chapter.title || chapter.original_filename;
+  }
+};
+
 export const EpubReader: React.FC = () => {
-  const { epubs, selectedEpubId, readerState, loadChapterContent, setReaderState } =
+  const { epubs, selectedEpubId, readerState, loadChapterContent, loadRefactoredChapter, setReaderState } =
     useEpubStore();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedEpub = epubs.find((e) => e.id === selectedEpubId);
-  const currentChapter = selectedEpub?.structure?.chapters.find(
-    (c) => c.path === readerState.currentChapterPath
+
+  // 优先使用重构后的结构，回退到原始结构
+  const chapters = selectedEpub?.refactoredStructure?.structure.chapters ||
+                   selectedEpub?.structure?.chapters ||
+                   [];
+
+  // 查找当前章节
+  const currentChapter = chapters.find(
+    (c) => getChapterPath(c) === readerState.currentChapterPath
   );
+
+  // 检查是否使用重构后的 EPUB
+  const useRefactored = !!selectedEpub?.refactoredStructure?.epubId;
 
   // 当章节路径改变时加载章节内容
   useEffect(() => {
@@ -34,7 +65,11 @@ export const EpubReader: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      await loadChapterContent(chapterPath);
+      if (useRefactored && selectedEpub?.epubId) {
+        await loadRefactoredChapter(selectedEpub.epubId, chapterPath);
+      } else {
+        await loadChapterContent(chapterPath);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -131,7 +166,12 @@ export const EpubReader: React.FC = () => {
       const anchor = target as HTMLAnchorElement;
       const href = anchor.getAttribute('href');
 
-      if (href && (href.startsWith('./') || href.startsWith('../') || href.endsWith('.html') || href.endsWith('.xhtml'))) {
+      if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+        // 外部链接：在默认浏览器中打开
+        event.preventDefault();
+        openUrl(href);
+      } else if (href && (href.startsWith('./') || href.startsWith('../') || href.endsWith('.html') || href.endsWith('.xhtml'))) {
+        // 内部章节链接
         event.preventDefault();
         navigateToChapter(href);
       } else if (href && href.startsWith('#')) {
@@ -149,21 +189,23 @@ export const EpubReader: React.FC = () => {
   };
 
   const navigateToChapter = (href: string) => {
-    if (!selectedEpub?.structure) return;
+    if (!selectedEpub) return;
 
     // 解析相对路径
     const basePath = readerState.currentChapterPath?.split('/').slice(0, -1).join('/') || 'OEBPS/Text';
     const resolvedPath = resolvePath(basePath, href);
 
-    // 查找匹配的章节
-    const targetChapter = selectedEpub.structure.chapters.find((c) =>
-      c.path === resolvedPath || c.path.endsWith(href) || c.path.endsWith(href.replace('../', ''))
-    );
+    // 优先在重构后的结构中查找
+    const targetChapter = chapters.find((c) => {
+      const path = getChapterPath(c);
+      return path === resolvedPath || path.endsWith(href) || path.endsWith(href.replace('../', ''));
+    });
 
     if (targetChapter) {
+      const chapterPath = getChapterPath(targetChapter);
       setReaderState({
         currentChapterIndex: targetChapter.order,
-        currentChapterPath: targetChapter.path,
+        currentChapterPath: chapterPath,
         scrollPosition: 0,
       });
     }
@@ -250,7 +292,7 @@ export const EpubReader: React.FC = () => {
             }}
             isFirstChapter={isFirstChapter}
             isLastChapter={isLastChapter}
-            chapterName={currentChapter?.name}
+            chapterName={currentChapter ? getChapterName(currentChapter) : undefined}
           />
         </>
       )}

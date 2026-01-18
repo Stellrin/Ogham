@@ -66,18 +66,21 @@ npm run tauri build    # 构建桌面应用
 ### 标准化结构
 经过 Ogham 处理的所有 EPUB 将遵循统一结构：
 ```
+mimetype                 # 标准 mimetype 文件
+META-INF/
+└── container.xml        # 标准容器文件
 OEBPS/
 ├── content.opf          # 标准 OPF 文件
-├── toc.ncx             # 标准 NCX 目录（EPUB 2.0）
-├── nav.xhtml           # 导航文件（EPUB 3.0，可选）
-├── Text/               # 章节目录
-│   ├── cover.xhtml    # 封面文件（保持原始命名）
-│   ├── episode1.xhtml  # 保持原始命名
+├── toc.ncx              # 标准 NCX 目录（EPUB 2.0）
+├── nav.xhtml            # 导航文件（EPUB 3.0，首选）
+├── Text/                # 章节目录
+│   ├── cover.xhtml      # 封面文件（保持原始命名）
+│   ├── episode1.xhtml   # 保持原始命名
 │   ├── episode2.xhtml
 │   └── ...
-├── Styles/             # 样式表（整理到此处）
+├── Styles/              # 样式表（整理到此处）
 │   └── style.css
-└── Images/             # 图片资源（整理到此处）
+└── Images/              # 图片资源（整理到此处）
     └── ...
 ```
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEpubStore } from '../store/epubStore';
+import { ExportButton } from './ExportButton';
 
 export const EpubList: React.FC = () => {
   const { epubs, selectedEpubId, selectEpub, removeEpub } = useEpubStore();
@@ -28,16 +29,19 @@ export const EpubList: React.FC = () => {
                   <span className="epub-name">{epub.name}</span>
                   <span className="epub-path">{epub.path}</span>
                 </div>
-                <button
-                  className="epub-delete-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeEpub(epub.id);
-                  }}
-                  title="删除"
-                >
-                  ×
-                </button>
+                <div className="epub-item-actions">
+                  <ExportButton epubId={epub.epubId || epub.id} epubName={epub.name} />
+                  <button
+                    className="epub-delete-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeEpub(epub.id);
+                    }}
+                    title="删除"
+                  >
+                    ×
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

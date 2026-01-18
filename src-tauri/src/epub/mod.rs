@@ -6,10 +6,19 @@ use std::io::Read;
 pub mod models;
 pub mod parser;
 pub mod extractor;
+pub mod analyzer;
+pub mod refactor;
+pub mod opf_builder;
+pub mod nav_builder;
+pub mod resource_manager;
+pub mod storage;
 
 pub use models::*;
 pub use parser::parse_epub;
 pub use extractor::{extract_chapter_content, convert_to_structure_result};
+pub use refactor::{refactor_epub, convert_to_refactored_result};
+pub use storage::{get_epub_storage_path, export_refactored_epub};
+pub use resource_manager::read_refactored_file as read_resource_file_content;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpubInfo {
@@ -136,8 +145,61 @@ pub async fn get_chapter_content_command(
         .map_err(|e| e.to_string())
 }
 
+/// 重构 EPUB 文件
+#[tauri::command]
+pub async fn refactor_epub_command(
+    epub_path: String,
+) -> Result<RefactoredEpubResult, String> {
+
+    let refactored = refactor_epub(&epub_path)
+        .map_err(|e| {
+            e.to_string()
+        })?;
+
+
+    Ok(convert_to_refactored_result(&refactored))
+}
+
+/// 从重构后的 EPUB 获取章节内容
+#[tauri::command]
+pub async fn get_chapter_from_refactored_command(
+    epub_id: String,
+    chapter_path: String,
+) -> Result<ChapterContent, String> {
+
+    let storage_path = get_epub_storage_path(&epub_id);
+    let file_path = chapter_path;
+
+    // 读取文件内容
+    let content = read_resource_file_content(&storage_path, &file_path)
+        .map_err(|e| e.to_string())?;
+
+    // TODO: 提取资源并转换为 Base64（暂时简化处理）
+    Ok(ChapterContent {
+        html: content,
+        resources: std::collections::HashMap::new(),
+    })
+}
+
 /// 测试命令 - 返回简单的字符串来验证 Tauri 命令是否工作
 #[tauri::command]
 pub async fn test_command() -> String {
     "Test command works!".to_string()
+}
+
+/// 导出重构后的 EPUB 文件
+#[tauri::command]
+pub async fn export_epub_command(
+    epub_id: String,
+    export_path: String,
+) -> Result<String, String> {
+
+    export_refactored_epub(&epub_id, &export_path)
+        .map_err(|e| {
+            println!("[ERROR] EPUB 导出失败: {}", e);
+            e.to_string()
+        })?;
+
+
+    Ok(export_path)
 }

@@ -17,6 +17,9 @@ pub fn run() {
             epub::parse_epub_structure_command,
             epub::get_chapter_content_command,
             epub::test_command,
+            epub::refactor_epub_command,
+            epub::get_chapter_from_refactored_command,
+            epub::export_epub_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

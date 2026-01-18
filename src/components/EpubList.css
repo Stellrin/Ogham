@@ -108,6 +108,13 @@
   text-overflow: ellipsis;
 }
 
+.epub-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .epub-delete-btn {
   flex-shrink: 0;
   width: 22px;

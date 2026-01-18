@@ -23,7 +23,9 @@
       "Bash(powershell:*)",
       "Bash(dir:*)",
       "Bash(Select-String -Pattern \"chapter-\")",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(npx tsc:*)",
+      "Bash(python3 -c \"\nimport zipfile\nimport os\nepub_path = os.path.join\\(os.getcwd\\(\\), ''星尘战姬：淫蚀.epub''\\)\nwith zipfile.ZipFile\\(epub_path, ''r''\\) as z:\n    for name in sorted\\(z.namelist\\(\\)\\)[:40]:\n        print\\(name\\)\n\")"
     ]
   }
 }

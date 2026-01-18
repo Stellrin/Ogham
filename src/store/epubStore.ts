@@ -45,6 +45,8 @@ export interface EpubFile {
   structureError?: string;
   loadedAt: number;
   loaded_at?: number;
+  refactoredStructure?: RefactoredEpubStructure;
+  epubId?: string;
 }
 
 export interface ReaderState {
@@ -68,6 +70,46 @@ interface BackendEpubStructure {
   metadata?: EpubMetadata;
 }
 
+// 重构系统相关接口
+export interface RefactoredEpubStructure {
+  epubId: string;
+  metadata: EpubMetadata;
+  structure: StandardEpubStructure;
+  storagePath: string;
+}
+
+export interface StandardEpubStructure {
+  chapters: StandardChapter[];
+  styles: string[];
+  images: string[];
+  fonts: string[];
+  navigation: NavigationEntry[];
+}
+
+export interface StandardChapter {
+  id: string;
+  original_filename: string;
+  standard_path: string;
+  title?: string;
+  order: number;
+  content?: ChapterContent;
+}
+
+export interface NavigationEntry {
+  id: string;
+  label: string;
+  content_src: string;
+  level: number;
+  children: NavigationEntry[];
+}
+
+interface BackendRefactoredEpubResult {
+  epub_id: string;
+  metadata: EpubMetadata;
+  structure: StandardEpubStructure;
+  storage_path: string;
+}
+
 interface EpubStore {
   epubs: EpubFile[];
   selectedEpubId: string | null;
@@ -78,9 +120,13 @@ interface EpubStore {
   selectEpub: (id: string) => void;
   updateEpubStructure: (id: string, structure: EpubStructure) => void;
   setStructureError: (id: string, error: string) => void;
+  updateRefactoredStructure: (id: string, refactoredStructure: RefactoredEpubStructure) => void;
 
   loadEpubStructure: (id: string) => Promise<void>;
   loadChapterContent: (chapterPath: string) => Promise<void>;
+  refactorEpub: (id: string) => Promise<void>;
+  loadRefactoredChapter: (epubId: string, chapterPath: string) => Promise<void>;
+  exportEpub: (epubId: string) => Promise<string>;
   setReaderState: (state: Partial<ReaderState>) => void;
   navigateChapter: (direction: 'prev' | 'next') => void;
 }
@@ -133,6 +179,20 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     set((state) => ({
       epubs: state.epubs.map((epub) =>
         epub.id === id ? { ...epub, structureError: error } : epub
+      ),
+    })),
+
+  updateRefactoredStructure: (id, refactoredStructure) =>
+    set((state) => ({
+      epubs: state.epubs.map((epub) =>
+        epub.id === id
+          ? {
+              ...epub,
+              refactoredStructure,
+              epubId: refactoredStructure.epubId,
+              structureError: undefined,
+            }
+          : epub
       ),
     })),
 
@@ -230,5 +290,91 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         scrollPosition: 0,
       });
     }
+  },
+
+  refactorEpub: async (id: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === id);
+    if (!epub) return;
+
+    try {
+      const result = await invoke<BackendRefactoredEpubResult>('refactor_epub_command', {
+        epubPath: epub.path,
+      });
+
+      const refactoredStructure: RefactoredEpubStructure = {
+        epubId: result.epub_id,
+        metadata: result.metadata,
+        structure: result.structure,
+        storagePath: result.storage_path,
+      };
+
+      get().updateRefactoredStructure(id, refactoredStructure);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      get().setStructureError(id, errorMessage);
+    }
+  },
+
+  loadRefactoredChapter: async (epubId: string, chapterPath: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+    if (!epub) return;
+
+    try {
+      const content = await invoke<ChapterContent>('get_chapter_from_refactored_command', {
+        epubId,
+        chapterPath,
+      });
+
+      set((state) => ({
+        epubs: state.epubs.map((e) => {
+          if (e.id === epub.id) {
+            return {
+              ...e,
+              refactoredStructure: e.refactoredStructure
+                ? {
+                    ...e.refactoredStructure,
+                    structure: {
+                      ...e.refactoredStructure.structure,
+                      chapters: e.refactoredStructure.structure.chapters.map((ch) =>
+                        ch.standard_path === chapterPath ? { ...ch, content } : ch
+                      ),
+                    },
+                  }
+                : undefined,
+            };
+          }
+          return e;
+        }),
+      }));
+    } catch (error) {
+      console.error('Failed to load refactored chapter content:', error);
+    }
+  },
+
+  exportEpub: async (epubId: string) => {
+    const state = get();
+    // 首先通过 epubId 查找，如果找不到则通过 id 查找
+    let epub = state.epubs.find((e) => e.epubId === epubId);
+    if (!epub) {
+      epub = state.epubs.find((e) => e.id === epubId);
+    }
+    if (!epub) {
+      throw new Error('EPUB not found');
+    }
+
+    // 如果 EPUB 还没有重构，先重构它
+    if (!epub.refactoredStructure) {
+      await get().refactorEpub(epub.id);
+    }
+
+    // 获取更新后的 EPUB 信息
+    const updatedEpub = get().epubs.find((e) => e.id === epub.id);
+    if (!updatedEpub?.refactoredStructure) {
+      throw new Error('EPUB refactoring failed');
+    }
+
+    return updatedEpub.refactoredStructure.epubId;
   },
 }));

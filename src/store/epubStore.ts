@@ -56,6 +56,8 @@ export interface ReaderState {
   fontSize: number;
   fontFamily: string;
   lineHeight: number;
+  viewingImagePath: string | null;
+  viewingImageData: string | null;
 }
 
 // 后端返回的数据结构（snake_case）
@@ -124,6 +126,7 @@ interface EpubStore {
 
   loadEpubStructure: (id: string) => Promise<void>;
   loadChapterContent: (chapterPath: string) => Promise<void>;
+  loadImageContent: (imagePath: string) => Promise<void>;
   refactorEpub: (id: string) => Promise<void>;
   loadRefactoredChapter: (epubId: string, chapterPath: string) => Promise<void>;
   exportEpub: (epubId: string) => Promise<string>;
@@ -138,6 +141,8 @@ const defaultReaderState: ReaderState = {
   fontSize: 16,
   fontFamily: '"Georgia", serif',
   lineHeight: 1.6,
+  viewingImagePath: null,
+  viewingImageData: null,
 };
 
 export const useEpubStore = create<EpubStore>((set, get) => ({
@@ -259,6 +264,37 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       }));
     } catch (error) {
       console.error('Failed to load chapter content:', error);
+    }
+  },
+
+  loadImageContent: async (imagePath: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+    if (!epub) return;
+
+    try {
+      // Determine whether to use refactored or original structure
+      if (epub.refactoredStructure?.epubId) {
+        const imageData = await invoke<string>('get_image_from_refactored_command', {
+          epubId: epub.refactoredStructure.epubId,
+          imagePath,
+        });
+        get().setReaderState({
+          viewingImagePath: imagePath,
+          viewingImageData: imageData,
+        });
+      } else {
+        const imageData = await invoke<string>('get_image_content_command', {
+          epubPath: epub.path,
+          imagePath,
+        });
+        get().setReaderState({
+          viewingImagePath: imagePath,
+          viewingImageData: imageData,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load image content:', error);
     }
   },
 

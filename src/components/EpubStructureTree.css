@@ -74,6 +74,16 @@
   gap: 6px;
 }
 
+.tree-folder {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.tree-folder:hover {
+  background-color: #f5f5f5;
+}
+
 .tree-leaf {
   padding-left: 20px;
 }
@@ -128,6 +138,24 @@
 }
 
 .chapter-item.active .tree-label {
+  color: #4a90d9;
+  font-weight: 500;
+}
+
+.image-item {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.image-item:hover {
+  background-color: #f5f5f5;
+}
+
+.image-item.active {
+  background-color: #e3effd;
+}
+
+.image-item.active .tree-label {
   color: #4a90d9;
   font-weight: 500;
 }

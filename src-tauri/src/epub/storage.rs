@@ -178,6 +178,19 @@ pub fn cleanup_epub_storage(epub_id: &str) -> Result<(), RefactorError> {
     Ok(())
 }
 
+/// 清理整个 Ogham 库目录
+pub fn cleanup_ogham_library() -> Result<(), RefactorError> {
+    let temp_dir = std::env::temp_dir();
+    let ogham_lib_path = temp_dir.join("ogham-library");
+
+    if ogham_lib_path.exists() {
+        fs::remove_dir_all(&ogham_lib_path)
+            .map_err(|e| RefactorError::IoError(format!("无法删除库目录 {:?}: {}", ogham_lib_path, e)))?;
+    }
+
+    Ok(())
+}
+
 /// 检查 EPUB 是否已存在
 pub fn epub_exists(epub_id: &str) -> bool {
     let storage_path = get_epub_storage_path(epub_id);

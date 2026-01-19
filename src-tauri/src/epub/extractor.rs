@@ -258,11 +258,11 @@ pub fn convert_to_structure_result(
     // 遍历 manifest 提取样式和图片
     for (_id, item) in &parsed.manifest.items {
         if item.media_type.starts_with("text/css") {
-            let style_name = item.href.rsplit('/').next().unwrap_or(&item.href);
-            styles.push(style_name.to_string());
+            // 存储完整路径
+            styles.push(item.href.clone());
         } else if item.media_type.starts_with("image/") {
-            let image_name = item.href.rsplit('/').next().unwrap_or(&item.href);
-            images.push(image_name.to_string());
+            // 存储完整路径（与章节保持一致）
+            images.push(item.href.clone());
         } else if item.media_type == "application/x-dtbncx+xml" {
             toc_ncx = Some(item.href.clone());
         } else if item.properties.as_ref().map_or(false, |p| p.contains(&"nav".to_string())) {

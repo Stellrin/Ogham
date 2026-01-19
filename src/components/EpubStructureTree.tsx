@@ -1,18 +1,39 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useEpubStore } from '../store/epubStore';
 import type { Chapter } from '../store/epubStore';
 
 export const EpubStructureTree: React.FC = () => {
-  const { epubs, selectedEpubId, readerState, setReaderState } = useEpubStore();
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['text']));
+
+  const toggleSection = (section: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  };
+  const { epubs, selectedEpubId, readerState, setReaderState, loadImageContent } = useEpubStore();
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
 
-  const handleChapterClick = (chapter: Chapter) => {
+  const handleChapterClick = (e: React.MouseEvent, chapter: Chapter) => {
+    e.stopPropagation();
     setReaderState({
       currentChapterIndex: chapter.order,
       currentChapterPath: chapter.path,
       scrollPosition: 0,
+      viewingImagePath: null,
+      viewingImageData: null,
     });
+  };
+
+  const handleImageClick = (e: React.MouseEvent, imagePath: string) => {
+    e.stopPropagation();
+    loadImageContent(imagePath);
   };
 
   if (!selectedEpub) {
@@ -49,6 +70,27 @@ export const EpubStructureTree: React.FC = () => {
 
   const structure = selectedEpub.structure;
 
+  // 可折叠的文件夹节点组件
+  const FolderNode: React.FC<{
+    label: string;
+    sectionId: string;
+    children: React.ReactNode;
+  }> = ({ label, sectionId, children }) => {
+    const isExpanded = expandedSections.has(sectionId);
+    return (
+      <>
+        <div
+          className="tree-node tree-folder"
+          onClick={() => toggleSection(sectionId)}
+        >
+          <span className="tree-icon">{isExpanded ? '📂' : '📁'}</span>
+          <span className="tree-label">{label}</span>
+        </div>
+        {isExpanded && <div className="tree-children">{children}</div>}
+      </>
+    );
+  };
+
   return (
     <div className="structure-tree">
       <div className="structure-header">
@@ -56,13 +98,7 @@ export const EpubStructureTree: React.FC = () => {
         <span className="epub-filename">{selectedEpub.name}</span>
       </div>
       <div className="structure-content">
-        <div className="tree-node">
-          <span className="tree-icon">📁</span>
-          <span className="tree-label">OEBPS/</span>
-        </div>
-
-        <div className="tree-children">
-          {/* content.opf */}
+        <FolderNode label="OEBPS/" sectionId="oebps">
           <div className="tree-node tree-leaf">
             <span className="tree-icon">📄</span>
             <span className="tree-label file-name">content.opf</span>
@@ -88,18 +124,14 @@ export const EpubStructureTree: React.FC = () => {
           )}
 
           {/* Text/ */}
-          <div className="tree-node">
-            <span className="tree-icon">📁</span>
-            <span className="tree-label">Text/</span>
-          </div>
-          <div className="tree-children">
+          <FolderNode label="Text/" sectionId="text">
             {structure.chapters.map((chapter) => {
               const isActive = chapter.path === readerState.currentChapterPath;
               return (
                 <div
                   key={chapter.id}
                   className={`tree-node tree-leaf chapter-item ${isActive ? 'active' : ''}`}
-                  onClick={() => handleChapterClick(chapter)}
+                  onClick={(e) => handleChapterClick(e, chapter)}
                 >
                   <span className="tree-icon">📖</span>
                   <span className="tree-label file-name">{chapter.name}</span>
@@ -109,44 +141,43 @@ export const EpubStructureTree: React.FC = () => {
                 </div>
               );
             })}
-          </div>
+          </FolderNode>
 
           {/* Styles/ */}
           {structure.styles.length > 0 && (
-            <>
-              <div className="tree-node">
-                <span className="tree-icon">📁</span>
-                <span className="tree-label">Styles/</span>
-              </div>
-              <div className="tree-children">
-                {structure.styles.map((style, index) => (
+            <FolderNode label="Styles/" sectionId="styles">
+              {structure.styles.map((style, index) => {
+                const fileName = style.split('/').pop() || style;
+                return (
                   <div key={index} className="tree-node tree-leaf">
                     <span className="tree-icon">🎨</span>
-                    <span className="tree-label file-name">{style}</span>
+                    <span className="tree-label file-name">{fileName}</span>
                   </div>
-                ))}
-              </div>
-            </>
+                );
+              })}
+            </FolderNode>
           )}
 
           {/* Images/ */}
           {structure.images.length > 0 && (
-            <>
-              <div className="tree-node">
-                <span className="tree-icon">📁</span>
-                <span className="tree-label">Images/</span>
-              </div>
-              <div className="tree-children">
-                {structure.images.map((image, index) => (
-                  <div key={index} className="tree-node tree-leaf">
+            <FolderNode label="Images/" sectionId="images">
+              {structure.images.map((image, index) => {
+                const fileName = image.split('/').pop() || image;
+                const isViewing = readerState.viewingImagePath === image;
+                return (
+                  <div
+                    key={index}
+                    className={`tree-node tree-leaf image-item ${isViewing ? 'active' : ''}`}
+                    onClick={(e) => handleImageClick(e, image)}
+                  >
                     <span className="tree-icon">🖼️</span>
-                    <span className="tree-label file-name">{image}</span>
+                    <span className="tree-label file-name">{fileName}</span>
                   </div>
-                ))}
-              </div>
-            </>
+                );
+              })}
+            </FolderNode>
           )}
-        </div>
+        </FolderNode>
       </div>
     </div>
   );

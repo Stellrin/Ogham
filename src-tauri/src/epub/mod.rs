@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
 use std::io::Read;
 
@@ -17,7 +17,7 @@ pub use models::*;
 pub use parser::parse_epub;
 pub use extractor::{extract_chapter_content, convert_to_structure_result};
 pub use refactor::{refactor_epub, convert_to_refactored_result};
-pub use storage::{get_epub_storage_path, export_refactored_epub};
+pub use storage::{get_epub_storage_path, export_refactored_epub, cleanup_ogham_library};
 pub use resource_manager::read_refactored_file as read_resource_file_content;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -202,4 +202,58 @@ pub async fn export_epub_command(
 
 
     Ok(export_path)
+}
+
+/// 从原始 EPUB 获取图片内容（返回 Base64）
+#[tauri::command]
+pub async fn get_image_content_command(
+    epub_path: String,
+    image_path: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let file = File::open(&epub_path)
+        .map_err(|e| format!("无法打开 EPUB 文件: {}", e))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| format!("无法打开 ZIP 归档: {}", e))?;
+
+    // 从 ZIP 中提取图片
+    let mut image_file = archive
+        .by_name(&image_path)
+        .map_err(|_| format!("图片文件不存在: {}", image_path))?;
+
+    let mut buffer = Vec::new();
+    image_file
+        .read_to_end(&mut buffer)
+        .map_err(|e| format!("无法读取图片: {}", e))?;
+
+    // 转换为 Base64
+    let base64_engine = base64::engine::general_purpose::STANDARD;
+    let base64_data = base64_engine.encode(&buffer);
+
+    Ok(base64_data)
+}
+
+/// 从重构后的 EPUB 获取图片内容（返回 Base64）
+#[tauri::command]
+pub async fn get_image_from_refactored_command(
+    epub_id: String,
+    image_path: String,
+) -> Result<String, String> {
+    use base64::Engine;
+
+    let storage_path = get_epub_storage_path(&epub_id);
+    let full_path = Path::new(&storage_path).join(&image_path);
+
+    // 读取图片文件
+    let buffer = fs::read(&full_path)
+        .map_err(|e| format!("无法读取图片 {:?}: {}", full_path, e))?;
+
+    // 转换为 Base64
+    let base64_engine = base64::engine::general_purpose::STANDARD;
+    let base64_data = base64_engine.encode(&buffer);
+
+    Ok(base64_data)
 }

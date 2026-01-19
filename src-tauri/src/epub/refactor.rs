@@ -161,25 +161,21 @@ fn build_standard_structures(
         });
     }
 
-    if let Some(ref nav) = analysis.special_files.nav {
-        let filename = nav.rsplit('/').next().unwrap_or(nav);
-        manifest_items.push(StandardManifestItem {
-            id: "nav".to_string(),
-            href: filename.to_string(),
-            media_type: "application/xhtml+xml".to_string(),
-            properties: Some(vec!["nav".to_string()]),
-        });
-    }
+    // 确保 nav.xhtml 总是在 manifest 中（EPUB 3.0 标准）
+    manifest_items.push(StandardManifestItem {
+        id: "nav".to_string(),
+        href: "nav.xhtml".to_string(),
+        media_type: "application/xhtml+xml".to_string(),
+        properties: Some(vec!["nav".to_string()]),
+    });
 
-    if let Some(ref ncx) = analysis.special_files.ncx {
-        let filename = ncx.rsplit('/').next().unwrap_or(ncx);
-        manifest_items.push(StandardManifestItem {
-            id: "ncx".to_string(),
-            href: filename.to_string(),
-            media_type: "application/x-dtbncx+xml".to_string(),
-            properties: None,
-        });
-    }
+    // 确保 toc.ncx 总是在 manifest 中（EPUB 2.0 兼容性）
+    manifest_items.push(StandardManifestItem {
+        id: "ncx".to_string(),
+        href: "toc.ncx".to_string(),
+        media_type: "application/x-dtbncx+xml".to_string(),
+        properties: None,
+    });
 
     // 构建标准化阅读顺序
     let spine_itemrefs: Vec<StandardSpineItemref> = analysis.chapters
@@ -206,10 +202,17 @@ fn build_navigation(
     analysis: &EpubStructureAnalysis,
 ) -> Navigation {
     let toc = if let Some(ref table_of_contents) = parsed.table_of_contents {
-        // 从现有 TOC 构建导航
-        convert_toc_to_navigation(&table_of_contents.nav_points, &analysis.file_map, 0)
+        // 转换现有目录（传入 chapters 参数）
+        let converted = convert_toc_to_navigation(
+            &table_of_contents.nav_points,
+            &analysis.file_map,
+            &analysis.chapters,
+            0
+        );
+        // 验证并修复
+        validate_and_repair_toc(converted, analysis)
     } else {
-        // 从章节构建简单导航
+        // 无目录时从章节生成
         build_simple_navigation(analysis)
     };
 
@@ -220,33 +223,70 @@ fn build_navigation(
 fn convert_toc_to_navigation(
     nav_points: &[NavPoint],
     file_map: &FileMap,
+    chapters: &[ExtendedChapterInfo],
     level: usize,
 ) -> Vec<TocEntry> {
     nav_points
         .iter()
-        .enumerate()
-        .map(|(_i, nav_point)| {
-            // 获取标准路径，然后转换为相对于 OEBPS/ 的路径
-            let content_src = if let Some(standard_path) = file_map.original_to_standard.get(&nav_point.content_src) {
-                // 去掉 OEBPS/ 前缀，得到相对路径
-                if let Some(rest) = standard_path.strip_prefix("OEBPS/") {
-                    rest.to_string()
-                } else {
-                    standard_path.clone()
-                }
-            } else {
-                nav_point.content_src.clone()
-            };
+        .map(|nav_point| {
+            // 使用增强的路径解析
+            let content_src = resolve_toc_path(&nav_point.content_src, file_map, chapters);
 
             TocEntry {
                 id: nav_point.id.clone(),
                 label: nav_point.label.clone(),
                 content_src,
                 level,
-                children: convert_toc_to_navigation(&nav_point.children, file_map, level + 1),
+                children: convert_toc_to_navigation(&nav_point.children, file_map, chapters, level + 1),
             }
         })
         .collect()
+}
+
+/// 多策略 TOC 路径解析器
+fn resolve_toc_path(
+    original_path: &str,
+    file_map: &FileMap,
+    chapters: &[ExtendedChapterInfo],
+) -> String {
+    // 策略 1: 直接 file_map 查找
+    if let Some(standard_path) = file_map.original_to_standard.get(original_path) {
+        return strip_oebps_prefix(standard_path);
+    }
+
+    // 策略 2: 通过文件名匹配章节
+    let filename = extract_filename(original_path);
+    if let Some(chapter) = chapters.iter().find(|c| {
+        c.original_path.ends_with(&filename)
+    }) {
+        return strip_oebps_prefix(&chapter.standard_path);
+    }
+
+    // 策略 3: 特殊文件处理（nav.xhtml, toc.ncx, cover.xhtml）
+    if original_path.contains("nav.xhtml") {
+        return "nav.xhtml".to_string();
+    }
+    if original_path.contains("toc.ncx") {
+        return "toc.ncx".to_string();
+    }
+
+    // 策略 4: 返回相对路径（将在验证阶段过滤）
+    original_path.to_string()
+}
+
+/// 去掉 OEBPS/ 前缀（同时处理正斜杠和反斜杠）
+fn strip_oebps_prefix(path: &str) -> String {
+    path.strip_prefix("OEBPS/")
+        .or_else(|| path.strip_prefix("OEBPS\\"))
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// 提取文件名（同时处理正斜杠和反斜杠）
+fn extract_filename(path: &str) -> String {
+    // 先统一转换为正斜杠，再提取文件名
+    let normalized = path.replace('\\', "/");
+    normalized.rsplit('/').next().unwrap_or(&normalized).to_string()
 }
 
 /// 构建简单导航（从章节）
@@ -255,21 +295,59 @@ fn build_simple_navigation(analysis: &EpubStructureAnalysis) -> Vec<TocEntry> {
         .iter()
         .map(|chapter| {
             // 去掉 OEBPS/ 前缀，得到相对路径
-            let content_src = if let Some(rest) = chapter.standard_path.strip_prefix("OEBPS/") {
-                rest.to_string()
-            } else {
-                chapter.standard_path.clone()
-            };
+            let content_src = strip_oebps_prefix(&chapter.standard_path);
 
             TocEntry {
                 id: chapter.id.clone(),
                 label: chapter.title.clone().unwrap_or_else(|| {
-                    chapter.original_path.rsplit('/').next().unwrap_or(&chapter.original_path).to_string()
+                    extract_filename(&chapter.original_path)
                 }),
                 content_src,
                 level: 0,
                 children: Vec::new(),
             }
+        })
+        .collect()
+}
+
+/// 验证并修复目录条目
+fn validate_and_repair_toc(
+    toc_entries: Vec<TocEntry>,
+    analysis: &EpubStructureAnalysis,
+) -> Vec<TocEntry> {
+    // 收集有效章节路径（规范化为正斜杠）
+    let valid_chapters: std::collections::HashSet<String> = analysis.chapters
+        .iter()
+        .map(|c| {
+            let path = strip_oebps_prefix(&c.standard_path);
+            path.replace('\\', "/")  // 统一使用正斜杠
+        })
+        .collect();
+
+    toc_entries
+        .into_iter()
+        .filter_map(|entry| {
+            // 规范化路径（统一使用正斜杠）
+            let normalized_src = entry.content_src.replace('\\', "/");
+
+            // 检查是否指向有效文件
+            let is_valid = valid_chapters.contains(&normalized_src)
+                || normalized_src == "nav.xhtml"
+                || normalized_src.contains("cover.xhtml");
+
+            if !is_valid {
+                println!("[WARN] TOC 条目 '{}' 指向无效文件: {}, 已过滤",
+                         entry.label, entry.content_src);
+                return None;
+            }
+
+            // 递归验证子条目
+            let valid_children = validate_and_repair_toc(entry.children, analysis);
+
+            Some(TocEntry {
+                children: valid_children,
+                ..entry
+            })
         })
         .collect()
 }
@@ -293,6 +371,9 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
                 // 提取文件名
                 let original_filename = item.href.rsplit('/').next().unwrap_or(&item.href).to_string();
 
+                // 添加 OEBPS/ 前缀作为标准路径
+                let standard_path = format!("OEBPS/{}", item.href);
+
                 // 查找章节顺序
                 let order = refactored.spine.itemrefs
                     .iter()
@@ -302,7 +383,7 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
                 Some(StandardChapter {
                     id: item.id.clone(),
                     original_filename,
-                    standard_path: item.href.clone(),
+                    standard_path,
                     title,
                     order,
                 })
@@ -311,12 +392,12 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
         styles: refactored.manifest.items
             .iter()
             .filter(|item| item.media_type == "text/css")
-            .map(|item| item.href.rsplit('/').next().unwrap_or(&item.href).to_string())
+            .map(|item| format!("OEBPS/{}", item.href))
             .collect(),
         images: refactored.manifest.items
             .iter()
             .filter(|item| item.media_type.starts_with("image/"))
-            .map(|item| item.href.rsplit('/').next().unwrap_or(&item.href).to_string())
+            .map(|item| format!("OEBPS/{}", item.href))
             .collect(),
         fonts: refactored.manifest.items
             .iter()
@@ -325,7 +406,7 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
                     "font/ttf" | "font/otf" | "font/woff" | "font/woff2" |
                     "application/font-ttf" | "application/font-woff" | "application/font-woff2")
             })
-            .map(|item| item.href.rsplit('/').next().unwrap_or(&item.href).to_string())
+            .map(|item| format!("OEBPS/{}", item.href))
             .collect(),
         navigation: convert_navigation_to_frontend(&refactored.navigation.toc),
     };

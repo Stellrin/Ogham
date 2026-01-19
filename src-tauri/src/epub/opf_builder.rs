@@ -45,7 +45,7 @@ fn build_opf_xml(
     {}
   </manifest>
 
-  <spine>
+  <spine toc="ncx">
     {}
   </spine>
 </package>

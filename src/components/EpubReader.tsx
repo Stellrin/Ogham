@@ -47,16 +47,20 @@ export const EpubReader: React.FC = () => {
 
   // 当章节路径改变时加载章节内容
   useEffect(() => {
-    if (readerState.currentChapterPath && !currentChapter?.content) {
+    if (readerState.viewingImagePath && readerState.viewingImageData) {
+      renderImage(readerState.viewingImageData, readerState.viewingImagePath);
+    } else if (readerState.currentChapterPath && !currentChapter?.content) {
       loadChapter(readerState.currentChapterPath);
     } else if (currentChapter?.content) {
       renderContent(currentChapter.content.html);
     }
-  }, [readerState.currentChapterPath, currentChapter?.content]);
+  }, [readerState.currentChapterPath, currentChapter?.content, readerState.viewingImagePath, readerState.viewingImageData]);
 
   // 当阅读器设置改变时重新渲染
   useEffect(() => {
-    if (currentChapter?.content) {
+    if (readerState.viewingImagePath && readerState.viewingImageData) {
+      renderImage(readerState.viewingImageData, readerState.viewingImagePath);
+    } else if (currentChapter?.content) {
       renderContent(currentChapter.content.html);
     }
   }, [readerState.fontSize, readerState.fontFamily, readerState.lineHeight]);
@@ -74,6 +78,93 @@ export const EpubReader: React.FC = () => {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const renderImage = (imageData: string, imagePath: string) => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const doc = iframe.contentDocument;
+    if (!doc) return;
+
+    // Extract filename from path for display
+    const filename = imagePath.split('/').pop() || imagePath;
+
+    const imageHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              padding: 20px;
+              font-family: ${readerState.fontFamily};
+              font-size: ${readerState.fontSize}px;
+              line-height: ${readerState.lineHeight};
+              color: #333;
+              background-color: #ffffff;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              min-height: 100vh;
+            }
+            .image-header {
+              text-align: center;
+              margin-bottom: 20px;
+              padding-bottom: 10px;
+              border-bottom: 1px solid #e0e0e0;
+              width: 100%;
+              max-width: 800px;
+            }
+            .image-filename {
+              font-size: 14px;
+              color: #666;
+              font-family: 'Consolas', 'Monaco', monospace;
+            }
+            .image-container {
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              width: 100%;
+              flex: 1;
+            }
+            img {
+              max-width: 100%;
+              max-height: calc(100vh - 150px);
+              height: auto;
+              display: block;
+              object-fit: contain;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="image-header">
+            <span class="image-filename">${filename}</span>
+          </div>
+          <div class="image-container">
+            <img src="data:image;base64,${imageData}" alt="${filename}" />
+          </div>
+        </body>
+      </html>
+    `;
+
+    doc.open();
+    doc.write(imageHtml);
+    doc.close();
+
+    // 恢复滚动位置
+    if (readerState.scrollPosition > 0) {
+      setTimeout(() => {
+        if (doc.documentElement) {
+          doc.documentElement.scrollTop = readerState.scrollPosition;
+        }
+      }, 0);
     }
   };
 
@@ -238,10 +329,6 @@ export const EpubReader: React.FC = () => {
     setReaderState({ fontSize: size });
   };
 
-  const selectedEpubHasChapters = selectedEpub?.structure?.chapters.length ?? 0;
-  const isFirstChapter = readerState.currentChapterIndex === 0;
-  const isLastChapter = readerState.currentChapterIndex >= selectedEpubHasChapters - 1;
-
   return (
     <div className="epub-reader">
       {loading && (
@@ -262,14 +349,14 @@ export const EpubReader: React.FC = () => {
         </div>
       )}
 
-      {selectedEpub && !readerState.currentChapterPath && (
+      {selectedEpub && !readerState.currentChapterPath && !readerState.viewingImagePath && (
         <div className="reader-empty">
           <p>请选择一个章节</p>
           <p className="hint">在左侧结构树中点击章节开始阅读</p>
         </div>
       )}
 
-      {selectedEpub && readerState.currentChapterPath && (
+      {selectedEpub && (readerState.currentChapterPath || readerState.viewingImagePath) && (
         <>
           <iframe
             ref={iframeRef}
@@ -280,19 +367,8 @@ export const EpubReader: React.FC = () => {
           <ReaderControls
             fontSize={readerState.fontSize}
             onFontSizeChange={handleFontSizeChange}
-            onPrevChapter={() => {
-              if (!isFirstChapter) {
-                setReaderState({ currentChapterIndex: readerState.currentChapterIndex - 1 });
-              }
-            }}
-            onNextChapter={() => {
-              if (!isLastChapter) {
-                setReaderState({ currentChapterIndex: readerState.currentChapterIndex + 1 });
-              }
-            }}
-            isFirstChapter={isFirstChapter}
-            isLastChapter={isLastChapter}
-            chapterName={currentChapter ? getChapterName(currentChapter) : undefined}
+            chapterName={readerState.viewingImagePath || (currentChapter ? getChapterName(currentChapter) : undefined)}
+            isImage={!!readerState.viewingImagePath}
           />
         </>
       )}
@@ -303,35 +379,24 @@ export const EpubReader: React.FC = () => {
 interface ReaderControlsProps {
   fontSize: number;
   onFontSizeChange: (size: number) => void;
-  onPrevChapter: () => void;
-  onNextChapter: () => void;
-  isFirstChapter: boolean;
-  isLastChapter: boolean;
   chapterName?: string;
+  isImage?: boolean;
 }
 
 const ReaderControls: React.FC<ReaderControlsProps> = ({
   fontSize,
   onFontSizeChange,
-  onPrevChapter,
-  onNextChapter,
-  isFirstChapter,
-  isLastChapter,
   chapterName,
+  isImage = false,
 }) => {
+  const displayName = isImage && chapterName
+    ? chapterName.split('/').pop() || chapterName
+    : chapterName || '';
+
   return (
     <div className="reader-controls">
-      <button
-        className="reader-nav-button"
-        onClick={onPrevChapter}
-        disabled={isFirstChapter}
-        title="上一章"
-      >
-        ← 上一章
-      </button>
-
       <div className="reader-info">
-        <span className="reader-chapter-name">{chapterName || ''}</span>
+        <span className="reader-chapter-name">{displayName}</span>
       </div>
 
       <div className="reader-settings">
@@ -347,15 +412,6 @@ const ReaderControls: React.FC<ReaderControlsProps> = ({
           <option value="20">特大</option>
         </select>
       </div>
-
-      <button
-        className="reader-nav-button"
-        onClick={onNextChapter}
-        disabled={isLastChapter}
-        title="下一章"
-      >
-        下一章 →
-      </button>
     </div>
   );
 };

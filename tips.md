@@ -22,10 +22,3 @@ book
 
 ## tips
 章节的media-type应设置为"application/xhtml+xml"  不要设置为"text/html"，否则会导致部分阅读器无法识别章节内容。
-
-
-
-books\zh.Ysgyb.無限淫獄の魔法少女 (二次元ドリームノベルズ) (Japanese Edition)\OEBPS\nav.xhtml
-books\zh.Ysgyb.無限淫獄の魔法少女 (二次元ドリームノベルズ) (Japanese Edition)\OEBPS\toc.ncx
-books\[きー子]纪子老师作品精选：TS娘系列\OEBPS\nav.xhtml
-books\[きー子]纪子老师作品精选：TS娘系列\OEBPS\toc.ncx

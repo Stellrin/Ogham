@@ -58,7 +58,11 @@ export interface ReaderState {
   lineHeight: number;
   viewingImagePath: string | null;
   viewingImageData: string | null;
+  pendingAnchor: string | null;
 }
+
+// 导出 CombinedChapter 类型供组件使用
+export type CombinedChapter = Chapter | StandardChapter;
 
 // 后端返回的数据结构（snake_case）
 interface BackendEpubStructure {
@@ -123,6 +127,7 @@ interface EpubStore {
   updateEpubStructure: (id: string, structure: EpubStructure) => void;
   setStructureError: (id: string, error: string) => void;
   updateRefactoredStructure: (id: string, refactoredStructure: RefactoredEpubStructure) => void;
+  clearRefactoredStructure: (id: string) => void;
 
   loadEpubStructure: (id: string) => Promise<void>;
   loadChapterContent: (chapterPath: string) => Promise<void>;
@@ -143,6 +148,7 @@ const defaultReaderState: ReaderState = {
   lineHeight: 1.6,
   viewingImagePath: null,
   viewingImageData: null,
+  pendingAnchor: null,
 };
 
 export const useEpubStore = create<EpubStore>((set, get) => ({
@@ -196,6 +202,19 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
               refactoredStructure,
               epubId: refactoredStructure.epubId,
               structureError: undefined,
+            }
+          : epub
+      ),
+    })),
+
+  clearRefactoredStructure: (id) =>
+    set((state) => ({
+      epubs: state.epubs.map((epub) =>
+        epub.id === id
+          ? {
+              ...epub,
+              refactoredStructure: undefined,
+              epubId: undefined,
             }
           : epub
       ),

@@ -1,27 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { useEpubStore, Chapter, StandardChapter } from '../store/epubStore';
+import { useEpubStore, CombinedChapter } from '../store/epubStore';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName } from '../utils/epubPathUtils';
 import './EpubReader.css';
-
-type CombinedChapter = Chapter | StandardChapter;
-
-// 获取章节路径的辅助函数
-const getChapterPath = (chapter: CombinedChapter): string => {
-  if ('path' in chapter) {
-    return chapter.path;
-  } else {
-    return chapter.standard_path;
-  }
-};
-
-// 获取章节名称的辅助函数
-const getChapterName = (chapter: CombinedChapter): string | undefined => {
-  if ('name' in chapter) {
-    return chapter.name;
-  } else {
-    return chapter.title || chapter.original_filename;
-  }
-};
 
 export const EpubReader: React.FC = () => {
   const { epubs, selectedEpubId, readerState, loadChapterContent, loadRefactoredChapter, setReaderState } =
@@ -64,6 +45,16 @@ export const EpubReader: React.FC = () => {
       renderContent(currentChapter.content.html);
     }
   }, [readerState.fontSize, readerState.fontFamily, readerState.lineHeight]);
+
+  // 当章节内容加载完成且有待处理锚点时
+  useEffect(() => {
+    if (readerState.pendingAnchor && iframeRef.current?.contentDocument) {
+      setTimeout(() => {
+        scrollToAnchor(readerState.pendingAnchor || '');
+        setReaderState({ pendingAnchor: null });
+      }, 100);
+    }
+  }, [readerState.pendingAnchor, currentChapter?.content]);
 
   const loadChapter = async (chapterPath: string) => {
     setLoading(true);
@@ -227,6 +218,11 @@ export const EpubReader: React.FC = () => {
     doc.write(enhancedHtml);
     doc.close();
 
+    // 等待 DOM 完全解析后再附加事件监听器
+    setTimeout(() => {
+      attachEventListeners();
+    }, 150);
+
     // 恢复滚动位置
     if (readerState.scrollPosition > 0) {
       setTimeout(() => {
@@ -235,62 +231,102 @@ export const EpubReader: React.FC = () => {
         }
       }, 0);
     }
-
-    // 添加事件监听
-    attachEventListeners();
   };
 
   const attachEventListeners = () => {
     const iframe = iframeRef.current;
     if (!iframe || !iframe.contentDocument) return;
 
-    // 监听点击事件处理内部链接
-    iframe.contentDocument.addEventListener('click', handleLinkClick);
+    // 移除旧的监听器（防止重复添加）
+    try {
+      iframe.contentDocument.removeEventListener('click', handleLinkClick, true);
+      iframe.contentDocument.removeEventListener('scroll', handleScroll);
+    } catch (e) {
+      // 忽略移除不存在的监听器的错误
+    }
+
+    // 使用捕获阶段监听点击事件处理内部链接
+    iframe.contentDocument.addEventListener('click', handleLinkClick, true);
 
     // 监听滚动事件
     iframe.contentDocument.addEventListener('scroll', handleScroll);
   };
 
-  const handleLinkClick = (event: MouseEvent) => {
-    const target = event.target as HTMLElement;
-    if (target.tagName === 'A') {
-      const anchor = target as HTMLAnchorElement;
-      const href = anchor.getAttribute('href');
+  const scrollToAnchor = (anchorId: string) => {
+    if (!anchorId) return;
+    const iframe = iframeRef.current;
+    if (!iframe?.contentDocument) return;
 
-      if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
-        // 外部链接：在默认浏览器中打开
-        event.preventDefault();
-        openUrl(href);
-      } else if (href && (href.startsWith('./') || href.startsWith('../') || href.endsWith('.html') || href.endsWith('.xhtml'))) {
-        // 内部章节链接
-        event.preventDefault();
-        navigateToChapter(href);
-      } else if (href && href.startsWith('#')) {
-        // 处理页面内锚点跳转
-        event.preventDefault();
-        const iframe = iframeRef.current;
-        if (iframe?.contentDocument) {
-          const targetElement = iframe.contentDocument.querySelector(href);
-          if (targetElement) {
-            targetElement.scrollIntoView({ behavior: 'smooth' });
-          }
-        }
-      }
+    const targetElement = iframe.contentDocument.getElementById(anchorId);
+    const namedElement = !targetElement
+      ? iframe.contentDocument.querySelector(`[name="${anchorId}"]`)
+      : null;
+
+    const element = targetElement || namedElement;
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setReaderState({ scrollPosition: iframe.contentDocument.documentElement.scrollTop });
     }
   };
 
-  const navigateToChapter = (href: string) => {
+  const handleLinkClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement;
+    // 使用 closest 查找最近的 <a> 标签（处理点击链接内子元素的情况）
+    const anchor = target.closest('A');
+
+    if (!anchor) return;
+
+    const href = anchor.getAttribute('href');
+    if (!href) return;
+
+    // 外部链接：在默认浏览器中打开
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      event.preventDefault();
+      openUrl(href);
+      return;
+    }
+
+    // 纯锚点链接：同页面跳转
+    if (href.startsWith('#')) {
+      event.preventDefault();
+      scrollToAnchor(href.slice(1));
+      return;
+    }
+
+    // 解析链接
+    const parsed = parseEpubHref(href);
+
+    // 检查是否为当前文件的锚点（如 "current.xhtml#section2" 或同文件引用）
+    if (parsed.chapterPath && readerState.currentChapterPath) {
+      const currentFileName = readerState.currentChapterPath.split('/').pop() || '';
+      const targetFileName = parsed.chapterPath.split('/').pop() || parsed.chapterPath;
+
+      // 如果目标文件名与当前文件名相同（忽略扩展名差异），视为同页面锚点
+      const currentFileNameNoExt = currentFileName.replace(/\.(x?html?)$/, '');
+      const targetFileNameNoExt = targetFileName.replace(/\.(x?html?)$/, '');
+
+      if (currentFileNameNoExt && targetFileNameNoExt &&
+          currentFileNameNoExt.toLowerCase() === targetFileNameNoExt.toLowerCase()) {
+        event.preventDefault();
+        scrollToAnchor(parsed.anchor);
+        return;
+      }
+    }
+
+    // 跨章节链接：使用新的导航函数
+    event.preventDefault();
+    navigateToChapterWithAnchor(href);
+  };
+
+  const navigateToChapterWithAnchor = (href: string) => {
     if (!selectedEpub) return;
 
-    // 解析相对路径
-    const basePath = readerState.currentChapterPath?.split('/').slice(0, -1).join('/') || 'OEBPS/Text';
-    const resolvedPath = resolvePath(basePath, href);
-
-    // 优先在重构后的结构中查找
-    const targetChapter = chapters.find((c) => {
-      const path = getChapterPath(c);
-      return path === resolvedPath || path.endsWith(href) || path.endsWith(href.replace('../', ''));
-    });
+    const parsed = parseEpubHref(href);
+    const targetChapter = findChapterByHref(
+      parsed.chapterPath,
+      chapters,
+      readerState.currentChapterPath || undefined
+    );
 
     if (targetChapter) {
       const chapterPath = getChapterPath(targetChapter);
@@ -298,23 +334,9 @@ export const EpubReader: React.FC = () => {
         currentChapterIndex: targetChapter.order,
         currentChapterPath: chapterPath,
         scrollPosition: 0,
+        pendingAnchor: parsed.anchor || null,
       });
     }
-  };
-
-  const resolvePath = (basePath: string, href: string): string => {
-    const baseParts = basePath.split('/').filter((p) => p);
-    const hrefParts = href.split('/').filter((p) => p && p !== '.');
-
-    for (const part of hrefParts) {
-      if (part === '..') {
-        baseParts.pop();
-      } else {
-        baseParts.push(part);
-      }
-    }
-
-    return baseParts.join('/');
   };
 
   const handleScroll = () => {
@@ -361,7 +383,6 @@ export const EpubReader: React.FC = () => {
           <iframe
             ref={iframeRef}
             className="reader-iframe"
-            sandbox="allow-same-origin allow-scripts"
             title="EPUB Reader"
           />
           <ReaderControls

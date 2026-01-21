@@ -184,6 +184,7 @@ fn resolve_path(base: &str, relative: &str) -> String {
 }
 
 /// 重写 HTML 中的资源路径为 data URI
+/// 只替换图片的链接，不替换 <a> 标签的 href
 fn rewrite_resource_urls(
     html: &str,
     resources: &std::collections::HashMap<String, ResourceData>,
@@ -191,21 +192,23 @@ fn rewrite_resource_urls(
     let mut result = html.to_string();
 
     for (original_path, resource_data) in resources {
+        // 只处理图片类型的资源（image/*, svg+xml）
+        let is_image = resource_data.mime_type.starts_with("image/") ||
+                       resource_data.mime_type.contains("svg");
+
+        if !is_image {
+            continue; // 跳过非图片资源
+        }
+
         let data_uri = format!(
             "data:{};base64,{}",
             resource_data.mime_type, resource_data.data
         );
 
-        // 替换 src=""
+        // 替换 src="" （用于 <img> 等标签）
         result = result.replace(
             &format!("src=\"{}\"", original_path),
             &format!("src=\"{}\"", &data_uri),
-        );
-
-        // 替换 href=""（用于样式表等）
-        result = result.replace(
-            &format!("href=\"{}\"", original_path),
-            &format!("href=\"{}\"", &data_uri),
         );
 
         // 替换 xlink:href=""（用于 SVG <image> 标签）

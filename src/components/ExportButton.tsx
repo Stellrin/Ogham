@@ -8,7 +8,7 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
   epubId,
   epubName,
 }) => {
-  const { exportEpub } = useEpubStore();
+  const { exportEpub, clearRefactoredStructure, loadEpubStructure, epubs } = useEpubStore();
   const [exporting, setExporting] = useState(false);
 
   const handleExport = async () => {
@@ -40,6 +40,13 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
           epubId: refactoredEpubId,
           exportPath: filePath,
         });
+
+        // 导出成功后，清除重构结构并重新加载文档结构
+        const epub = epubs.find((e) => e.id === epubId || e.epubId === epubId);
+        if (epub) {
+          clearRefactoredStructure(epub.id);
+          await loadEpubStructure(epub.id);
+        }
 
         alert(`导出成功: ${filePath}`);
       }

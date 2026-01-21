@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { useEpubStore } from '../store/epubStore';
-import type { Chapter } from '../store/epubStore';
+import React, { useState, useEffect } from 'react';
+import { useEpubStore, Chapter, StandardChapter, CombinedChapter } from '../store/epubStore';
+import { getChapterPath, getChapterName } from '../utils/epubPathUtils';
 
 export const EpubStructureTree: React.FC = () => {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['text']));
@@ -20,11 +20,28 @@ export const EpubStructureTree: React.FC = () => {
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
 
-  const handleChapterClick = (e: React.MouseEvent, chapter: Chapter) => {
+  // 优先使用重构后的结构，回退到原始结构
+  const allChapters: CombinedChapter[] = selectedEpub?.refactoredStructure?.structure.chapters ||
+                                          selectedEpub?.structure?.chapters ||
+                                          [];
+
+  // 自动展开 Text 文件夹当有章节被选中时
+  useEffect(() => {
+    if (readerState.currentChapterPath) {
+      setExpandedSections((prev) => {
+        const next = new Set(prev);
+        next.add('text');
+        return next;
+      });
+    }
+  }, [readerState.currentChapterPath]);
+
+  const handleChapterClick = (e: React.MouseEvent, chapter: CombinedChapter) => {
     e.stopPropagation();
+    const chapterPath = getChapterPath(chapter);
     setReaderState({
       currentChapterIndex: chapter.order,
-      currentChapterPath: chapter.path,
+      currentChapterPath: chapterPath,
       scrollPosition: 0,
       viewingImagePath: null,
       viewingImageData: null,
@@ -125,8 +142,10 @@ export const EpubStructureTree: React.FC = () => {
 
           {/* Text/ */}
           <FolderNode label="Text/" sectionId="text">
-            {structure.chapters.map((chapter) => {
-              const isActive = chapter.path === readerState.currentChapterPath;
+            {allChapters.map((chapter) => {
+              const chapterPath = getChapterPath(chapter);
+              const chapterName = getChapterName(chapter);
+              const isActive = chapterPath === readerState.currentChapterPath;
               return (
                 <div
                   key={chapter.id}
@@ -134,8 +153,8 @@ export const EpubStructureTree: React.FC = () => {
                   onClick={(e) => handleChapterClick(e, chapter)}
                 >
                   <span className="tree-icon">📖</span>
-                  <span className="tree-label file-name">{chapter.name}</span>
-                  {chapter.name === 'cover.xhtml' && (
+                  <span className="tree-label file-name">{chapterName}</span>
+                  {(chapterName === 'cover.xhtml' || chapterName === 'cover') && (
                     <span className="tree-badge special">封面</span>
                   )}
                 </div>

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**基于 Tauri 的现代化 EPUB 管理与阅读工具**
+**基于 Tauri 的 EPUB 管理与阅读工具**
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18.3-blue)](https://react.dev/)

@@ -282,3 +282,36 @@ pub struct NavigationEntry {
     pub level: usize,
     pub children: Vec<NavigationEntry>,
 }
+
+// ============================================================================
+// 目录管理 DTO 结构
+// ============================================================================
+
+/// 目录章节 DTO（用于前后端传输）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TocChapterDto {
+    pub id: String,
+    pub label: String,
+    pub content_src: String,
+    pub file_path: Option<String>,
+    pub level: usize,
+    pub order: usize,
+    pub children: Vec<TocChapterDto>,
+}
+
+/// 目录顺序更新 DTO
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TocOrderDto {
+    pub id: String,
+    pub label: String,
+    pub content_src: String,
+    pub children: Vec<TocOrderDto>,
+}
+
+/// 目录条目更新请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TocUpdateRequest {
+    pub entry_id: String,
+    pub new_label: Option<String>,
+    pub new_content_src: Option<String>,
+}

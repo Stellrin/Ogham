@@ -76,12 +76,14 @@ export function getChapterPath(chapter: CombinedChapter): string {
 
 /**
  * 获取章节名称（兼容 Chapter 和 StandardChapter）
+ * 文件视图优先使用原始文件名，目录视图可使用标题
  */
 export function getChapterName(chapter: CombinedChapter): string {
   if ('name' in chapter) {
     return chapter.name;
   }
-  return chapter.title || chapter.original_filename;
+  // 优先使用原始文件名，保持文件视图与文件名一致
+  return chapter.original_filename || chapter.title || '';
 }
 
 /**
@@ -162,7 +164,7 @@ export function findChapterByHref(
   chapters: CombinedChapter[],
   currentChapterPath?: string
 ): CombinedChapter | undefined {
-  const { chapterPath: targetPath, anchor } = parseEpubHref(targetHref);
+  const { chapterPath: targetPath } = parseEpubHref(targetHref);
 
   // 如果没有章节路径，只返回当前章节（锚点跳转）
   if (!targetPath) {

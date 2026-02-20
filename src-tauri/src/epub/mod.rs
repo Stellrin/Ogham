@@ -12,13 +12,15 @@ pub mod opf_builder;
 pub mod nav_builder;
 pub mod resource_manager;
 pub mod storage;
+pub mod toc_manager;
 
 pub use models::*;
 pub use parser::parse_epub;
 pub use extractor::{extract_chapter_content, convert_to_structure_result};
 pub use refactor::{refactor_epub, convert_to_refactored_result};
 pub use storage::{get_epub_storage_path, export_refactored_epub, cleanup_ogham_library};
-pub use resource_manager::read_refactored_file as read_resource_file_content;
+pub use resource_manager::{read_refactored_file as read_resource_file_content, extract_refactored_chapter_content};
+pub use toc_manager::TocManager;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpubInfo {
@@ -168,23 +170,10 @@ pub async fn get_chapter_from_refactored_command(
 ) -> Result<ChapterContent, String> {
 
     let storage_path = get_epub_storage_path(&epub_id);
-    let file_path = chapter_path;
 
-    // 读取文件内容
-    let content = read_resource_file_content(&storage_path, &file_path)
-        .map_err(|e| e.to_string())?;
-
-    // TODO: 提取资源并转换为 Base64（暂时简化处理）
-    Ok(ChapterContent {
-        html: content,
-        resources: std::collections::HashMap::new(),
-    })
-}
-
-/// 测试命令 - 返回简单的字符串来验证 Tauri 命令是否工作
-#[tauri::command]
-pub async fn test_command() -> String {
-    "Test command works!".to_string()
+    // 提取章节内容和资源（含 Base64 转换）
+    extract_refactored_chapter_content(&storage_path, &chapter_path)
+        .map_err(|e| e.to_string())
 }
 
 /// 导出重构后的 EPUB 文件
@@ -256,4 +245,42 @@ pub async fn get_image_from_refactored_command(
     let base64_data = base64_engine.encode(&buffer);
 
     Ok(base64_data)
+}
+
+/// 加载目录结构（带文件映射）
+#[tauri::command]
+pub async fn load_toc_entries_command(
+    epub_id: String,
+) -> Result<Vec<TocChapterDto>, String> {
+    let storage_path = get_epub_storage_path(&epub_id);
+
+    TocManager::load_toc_with_file_mapping(&epub_id, &storage_path)
+        .map_err(|e| e.to_string())
+}
+
+/// 更新目录顺序并同步到 OPF 和导航文件
+#[tauri::command]
+pub async fn update_toc_order_command(
+    epub_id: String,
+    new_order: Vec<TocOrderDto>,
+) -> Result<(), String> {
+    toc_manager::update_toc_order(&epub_id, &new_order)
+        .map_err(|e| e.to_string())
+}
+
+/// 更新单个目录项（标签、文件对应关系）
+#[tauri::command]
+pub async fn update_toc_entry_command(
+    epub_id: String,
+    entry_id: String,
+    new_label: Option<String>,
+    new_content_src: Option<String>,
+) -> Result<(), String> {
+    toc_manager::update_toc_entry(
+        &epub_id,
+        &entry_id,
+        new_label.as_deref(),
+        new_content_src.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }

@@ -44,7 +44,6 @@ export interface EpubFile {
   structure?: EpubStructure;
   structureError?: string;
   loadedAt: number;
-  loaded_at?: number;
   refactoredStructure?: RefactoredEpubStructure;
   epubId?: string;
 }
@@ -109,6 +108,21 @@ export interface NavigationEntry {
   children: NavigationEntry[];
 }
 
+// 目录章节 - 支持嵌套层级
+export interface TocChapter {
+  id: string;
+  label: string;
+  contentSrc: string;
+  filePath?: string;
+  level: number;
+  order: number;
+  children: TocChapter[];
+  isExpanded?: boolean;
+}
+
+// 视图模式
+export type ViewMode = 'file' | 'toc';
+
 interface BackendRefactoredEpubResult {
   epub_id: string;
   metadata: EpubMetadata;
@@ -121,6 +135,11 @@ interface EpubStore {
   selectedEpubId: string | null;
   readerState: ReaderState;
 
+  // 目录管理相关状态
+  viewMode: ViewMode;
+  tocEntries: TocChapter[];
+  expandedTocIds: Set<string>;
+
   addEpub: (file: EpubFile) => void;
   removeEpub: (id: string) => void;
   selectEpub: (id: string) => void;
@@ -128,6 +147,14 @@ interface EpubStore {
   setStructureError: (id: string, error: string) => void;
   updateRefactoredStructure: (id: string, refactoredStructure: RefactoredEpubStructure) => void;
   clearRefactoredStructure: (id: string) => void;
+
+  // 目录管理方法
+  setViewMode: (mode: ViewMode) => void;
+  loadTocEntries: (epubId: string) => Promise<void>;
+  updateTocEntryLabel: (entryId: string, newLabel: string) => Promise<void>;
+  updateTocEntryFile: (entryId: string, newContentSrc: string) => Promise<void>;
+  reorderTocEntries: (newOrder: TocChapter[]) => Promise<void>;
+  toggleTocExpanded: (entryId: string) => void;
 
   loadEpubStructure: (id: string) => Promise<void>;
   loadChapterContent: (chapterPath: string) => Promise<void>;
@@ -155,15 +182,14 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
   epubs: [],
   selectedEpubId: null,
   readerState: defaultReaderState,
+  viewMode: 'file',
+  tocEntries: [],
+  expandedTocIds: new Set<string>(),
 
   addEpub: (file) =>
     set((state) => {
-      const normalizedFile = {
-        ...file,
-        loadedAt: file.loadedAt ?? file.loaded_at ?? Date.now(),
-      };
       return {
-        epubs: [...state.epubs, normalizedFile],
+        epubs: [...state.epubs, file],
       };
     }),
 
@@ -173,11 +199,21 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       selectedEpubId: state.selectedEpubId === id ? null : state.selectedEpubId,
     })),
 
-  selectEpub: (id) =>
+  selectEpub: async (id: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === id);
+
     set(() => ({
       selectedEpubId: id,
       readerState: defaultReaderState,
-    })),
+      viewMode: 'file',
+    }));
+
+    // 选择 EPUB 后自动重构
+    if (epub && !epub.refactoredStructure) {
+      await get().refactorEpub(id);
+    }
+  },
 
   updateEpubStructure: (id, structure) =>
     set((state) => ({
@@ -432,4 +468,128 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
 
     return updatedEpub.refactoredStructure.epubId;
   },
+
+  // 目录管理方法实现
+  setViewMode: async (mode: ViewMode) => {
+    // 切换到目录视图时，如果 EPUB 尚未重构则自动重构
+    if (mode === 'toc') {
+      const state = get();
+      const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+      if (epub && !epub.refactoredStructure) {
+        await get().refactorEpub(epub.id);
+      }
+    }
+    set({ viewMode: mode });
+  },
+
+  loadTocEntries: async (epubId: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.epubId === epubId || e.id === epubId);
+    if (!epub?.refactoredStructure) return;
+
+    try {
+      const entries = await invoke<TocChapter[]>('load_toc_entries_command', {
+        epubId,
+      });
+      set({ tocEntries: entries });
+    } catch (error) {
+      console.error('Failed to load TOC entries:', error);
+    }
+  },
+
+  updateTocEntryLabel: async (entryId: string, newLabel: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+    if (!epub?.refactoredStructure) return;
+
+    try {
+      await invoke('update_toc_entry_command', {
+        epubId: epub.refactoredStructure.epubId,
+        entryId,
+        newLabel,
+        newContentSrc: null,
+      });
+
+      // 更新本地状态
+      const updateLabel = (entries: TocChapter[]): TocChapter[] => {
+        return entries.map((entry) => {
+          if (entry.id === entryId) {
+            return { ...entry, label: newLabel };
+          }
+          if (entry.children.length > 0) {
+            return { ...entry, children: updateLabel(entry.children) };
+          }
+          return entry;
+        });
+      };
+
+      set((state) => ({
+        tocEntries: updateLabel(state.tocEntries),
+      }));
+    } catch (error) {
+      console.error('Failed to update TOC entry label:', error);
+    }
+  },
+
+  updateTocEntryFile: async (entryId: string, newContentSrc: string) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+    if (!epub?.refactoredStructure) return;
+
+    try {
+      await invoke('update_toc_entry_command', {
+        epubId: epub.refactoredStructure.epubId,
+        entryId,
+        newLabel: null,
+        newContentSrc,
+      });
+
+      // 更新本地状态
+      const updateFile = (entries: TocChapter[]): TocChapter[] => {
+        return entries.map((entry) => {
+          if (entry.id === entryId) {
+            return { ...entry, contentSrc: newContentSrc };
+          }
+          if (entry.children.length > 0) {
+            return { ...entry, children: updateFile(entry.children) };
+          }
+          return entry;
+        });
+      };
+
+      set((state) => ({
+        tocEntries: updateFile(state.tocEntries),
+      }));
+    } catch (error) {
+      console.error('Failed to update TOC entry file:', error);
+    }
+  },
+
+  reorderTocEntries: async (newOrder: TocChapter[]) => {
+    const state = get();
+    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
+    if (!epub?.refactoredStructure) return;
+
+    try {
+      await invoke('update_toc_order_command', {
+        epubId: epub.refactoredStructure.epubId,
+        newOrder,
+      });
+
+      set({ tocEntries: newOrder });
+    } catch (error) {
+      console.error('Failed to reorder TOC entries:', error);
+    }
+  },
+
+  toggleTocExpanded: (entryId: string) =>
+    set((state) => {
+      const newExpanded = new Set(state.expandedTocIds);
+      if (newExpanded.has(entryId)) {
+        newExpanded.delete(entryId);
+      } else {
+        newExpanded.add(entryId);
+      }
+      return { expandedTocIds: newExpanded };
+    }),
 }));

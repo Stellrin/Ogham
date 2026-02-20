@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { useEpubStore, CombinedChapter } from '../store/epubStore';
+import { useEpubStore } from '../store/epubStore';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName } from '../utils/epubPathUtils';
 import './EpubReader.css';

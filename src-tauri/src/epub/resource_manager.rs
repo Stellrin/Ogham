@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use zip::ZipArchive;
 use regex::Regex;
+use base64::Engine;
 
 /// 从原始 EPUB 复制和整理文件到标准目录
 pub fn copy_and_organize_files(
@@ -40,6 +41,18 @@ pub fn copy_and_organize_files(
     // 复制其他文件
     for misc in &analysis.resources.misc {
         extract_and_copy_file(&mut archive, &misc.original_path, storage_path, &misc.standard_path)?;
+    }
+
+    // 复制 nav.xhtml (EPUB 3.0 导航文件)
+    if let Some(ref nav_path) = analysis.special_files.nav {
+        let standard_path = "OEBPS/nav.xhtml";
+        extract_and_copy_file(&mut archive, nav_path, storage_path, standard_path)?;
+    }
+
+    // 复制 toc.ncx (EPUB 2.0 目录文件)
+    if let Some(ref ncx_path) = analysis.special_files.ncx {
+        let standard_path = "OEBPS/toc.ncx";
+        extract_and_copy_file(&mut archive, ncx_path, storage_path, standard_path)?;
     }
 
     Ok(())
@@ -295,6 +308,185 @@ pub fn read_refactored_file(
 
     fs::read_to_string(&full_path)
         .map_err(|e| RefactorError::IoError(format!("无法读取文件 {:?}: {}", full_path, e)))
+}
+
+/// 从重构后的 EPUB 中提取章节内容（含嵌入的 Base64 资源）
+pub fn extract_refactored_chapter_content(
+    storage_path: &str,
+    chapter_path: &str,
+) -> Result<ChapterContent, RefactorError> {
+    // 读取章节 HTML
+    let html_content = read_refactored_file(storage_path, chapter_path)?;
+
+    // 提取资源并转换为 Base64
+    let resources = extract_resources_from_content(storage_path, &html_content, chapter_path)?;
+
+    // 重写 HTML 中的资源路径为 data URI
+    let processed_html = rewrite_resource_urls(&html_content, &resources);
+
+    Ok(ChapterContent {
+        html: processed_html,
+        resources,
+    })
+}
+
+/// 从内容中提取引用的资源
+fn extract_resources_from_content(
+    storage_path: &str,
+    html: &str,
+    chapter_path: &str,
+) -> Result<std::collections::HashMap<String, ResourceData>, RefactorError> {
+    let mut resources = std::collections::HashMap::new();
+
+    // 获取章节所在目录
+    let chapter_dir = if let Some(last_slash) = chapter_path.rfind('/') {
+        &chapter_path[..last_slash]
+    } else {
+        ""
+    };
+
+    // 正则表达式匹配 src=""、href="" 和 xlink:href="" 属性
+    let src_regex = Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
+        .map_err(|e| RefactorError::ParseError(e.to_string()))?;
+
+    for captures in src_regex.captures_iter(html) {
+        let resource_path = &captures[2];
+
+        // 跳过已经是 data: URI 的
+        if resource_path.starts_with("data:") {
+            continue;
+        }
+
+        // 跳过外部链接和锚点
+        if resource_path.starts_with("http://")
+            || resource_path.starts_with("https://")
+            || resource_path.starts_with('#')
+        {
+            continue;
+        }
+
+        // 跳过 CSS 样式表（暂时简化处理）
+        if resource_path.ends_with(".css") {
+            continue;
+        }
+
+        // 解析相对路径
+        let full_path = resolve_path(chapter_dir, resource_path);
+
+        // 如果已经提取过这个资源，跳过
+        if resources.contains_key(&captures[2]) {
+            continue;
+        }
+
+        // 尝试从文件系统读取资源
+        if let Ok(resource_data) = extract_single_resource_from_file(storage_path, &full_path) {
+            resources.insert(captures[2].to_string(), resource_data);
+        }
+    }
+
+    Ok(resources)
+}
+
+/// 从文件系统中提取单个资源并转为 Base64
+fn extract_single_resource_from_file(
+    storage_path: &str,
+    path: &str,
+) -> Result<ResourceData, RefactorError> {
+    let full_path = Path::new(storage_path).join(path);
+
+    let mut buffer = fs::read(&full_path)
+        .map_err(|e| RefactorError::IoError(format!("无法读取资源 {:?}: {}", full_path, e)))?;
+
+    // 根据 MIME 类型编码
+    let mime_type = guess_mime_type(path);
+    let base64_engine = base64::engine::general_purpose::STANDARD;
+    let data = base64_engine.encode(&buffer);
+
+    Ok(ResourceData { mime_type, data })
+}
+
+/// 猜测文件的 MIME 类型
+fn guess_mime_type(path: &str) -> String {
+    let path_lower = path.to_lowercase();
+    if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else if path_lower.ends_with(".png") {
+        "image/png".to_string()
+    } else if path_lower.ends_with(".gif") {
+        "image/gif".to_string()
+    } else if path_lower.ends_with(".svg") {
+        "image/svg+xml".to_string()
+    } else if path_lower.ends_with(".webp") {
+        "image/webp".to_string()
+    } else if path_lower.ends_with(".css") {
+        "text/css".to_string()
+    } else if path_lower.ends_with(".ttf") {
+        "font/ttf".to_string()
+    } else if path_lower.ends_with(".woff") {
+        "font/woff".to_string()
+    } else if path_lower.ends_with(".woff2") {
+        "font/woff2".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
+}
+
+/// 解析相对路径
+fn resolve_path(base: &str, relative: &str) -> String {
+    // 处理 ../ 路径
+    let mut base_parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
+    let path_parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
+
+    for part in &path_parts {
+        if *part == ".." {
+            base_parts.pop();
+        } else if !part.starts_with('.') {
+            base_parts.push(part);
+        }
+    }
+
+    if base_parts.is_empty() {
+        path_parts.join("/")
+    } else {
+        base_parts.join("/")
+    }
+}
+
+/// 重写 HTML 中的资源路径为 data URI
+fn rewrite_resource_urls(
+    html: &str,
+    resources: &std::collections::HashMap<String, ResourceData>,
+) -> String {
+    let mut result = html.to_string();
+
+    for (original_path, resource_data) in resources {
+        // 只处理图片类型的资源（image/*, svg+xml）
+        let is_image = resource_data.mime_type.starts_with("image/")
+                       || resource_data.mime_type.contains("svg");
+
+        if !is_image {
+            continue; // 跳过非图片资源
+        }
+
+        let data_uri = format!(
+            "data:{};base64,{}",
+            resource_data.mime_type, resource_data.data
+        );
+
+        // 替换 src="" （用于 <img> 等标签）
+        result = result.replace(
+            &format!("src=\"{}\"", original_path),
+            &format!("src=\"{}\"", &data_uri),
+        );
+
+        // 替换 xlink:href=""（用于 SVG <image> 标签）
+        result = result.replace(
+            &format!("xlink:href=\"{}\"", original_path),
+            &format!("xlink:href=\"{}\"", &data_uri),
+        );
+    }
+
+    result
 }
 
 #[cfg(test)]

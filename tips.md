@@ -22,3 +22,4 @@ book
 
 ## tips
 章节的media-type应设置为"application/xhtml+xml"  不要设置为"text/html"，否则会导致部分阅读器无法识别章节内容。
+

@@ -18,9 +18,17 @@ export const EpubReader: React.FC = () => {
                    selectedEpub?.structure?.chapters ||
                    [];
 
-  // 查找当前章节
+  // 标准化章节路径：将 "Text/x.xhtml" 补全为 "OEBPS/Text/x.xhtml" 以兼容旧格式
+  const normalizeChapterPath = (p: string | null): string => {
+    if (!p) return '';
+    if (p.startsWith('Text/')) return 'OEBPS/' + p;
+    return p;
+  };
+
+  // 查找当前章节（路径标准化后匹配）
+  const normalizedCurrentPath = normalizeChapterPath(readerState.currentChapterPath);
   const currentChapter = chapters.find(
-    (c) => getChapterPath(c) === readerState.currentChapterPath
+    (c) => getChapterPath(c) === normalizedCurrentPath
   );
 
   // 检查是否使用重构后的 EPUB
@@ -30,8 +38,8 @@ export const EpubReader: React.FC = () => {
   useEffect(() => {
     if (readerState.viewingImagePath && readerState.viewingImageData) {
       renderImage(readerState.viewingImageData, readerState.viewingImagePath);
-    } else if (readerState.currentChapterPath && !currentChapter?.content) {
-      loadChapter(readerState.currentChapterPath);
+    } else if (normalizedCurrentPath && !currentChapter?.content) {
+      loadChapter(normalizedCurrentPath);
     } else if (currentChapter?.content) {
       renderContent(currentChapter.content.html);
     }

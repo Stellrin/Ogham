@@ -70,7 +70,7 @@ export const EpubStructureTree: React.FC = () => {
     loadImageContent,
     viewMode,
     setViewMode,
-    reorderTocEntries,
+    tocEntries,
   } = useEpubStore();
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
@@ -200,11 +200,13 @@ export const EpubStructureTree: React.FC = () => {
           {selectedEpub?.refactoredStructure?.structure ? (
             <TocTreeView
               entries={
-                selectedEpub.refactoredStructure.structure.navigation?.length > 0
-                  ? convertNavigationToToc(selectedEpub.refactoredStructure.structure.navigation, allChapters)
-                  : convertChaptersToToc(allChapters)
+                // 优先使用 tocEntries（由 loadTocEntries 加载的最新数据），否则使用 navigation
+                tocEntries && tocEntries.length > 0
+                  ? tocEntries
+                  : selectedEpub.refactoredStructure.structure.navigation?.length > 0
+                    ? convertNavigationToToc(selectedEpub.refactoredStructure.structure.navigation, allChapters)
+                    : convertChaptersToToc(allChapters)
               }
-              onReorder={reorderTocEntries}
             />
           ) : selectedEpub?.structure?.chapters ? (
             // 未重构的 EPUB 显示原始目录信息

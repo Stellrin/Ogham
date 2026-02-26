@@ -213,24 +213,54 @@ pub fn export_refactored_epub(
         )));
     }
 
-    // 读取已生成的重构 EPUB 文件（如果存在）
-    let temp_dir = std::env::temp_dir();
-    let refactored_zip_path = temp_dir.join("ogham-library").join(format!("{}_refactored.epub", epub_id));
-    let refactored_zip = Path::new(&refactored_zip_path);
-
-    // 如果重构后的 ZIP 不存在，需要重新生成
-    if !refactored_zip.exists() {
-        return Err(RefactorError::IoError(format!(
-            "重构后的 EPUB 文件不存在: {}",
-            refactored_zip_path.display()
-        )));
-    }
-
-    // 复制文件到目标路径
-    fs::copy(&refactored_zip, export_path)
-        .map_err(|e| RefactorError::IoError(format!("无法复制文件: {}", e)))?;
+    // 每次都从存储目录重新构建 ZIP（确保包含转换后的内容）
+    rebuild_epub_zip(&storage_path, epub_id, export_path)?;
 
     Ok(export_path.to_string())
+}
+
+/// 从存储目录重新构建 EPUB ZIP 文件
+fn rebuild_epub_zip(
+    storage_path: &str,
+    epub_id: &str,
+    export_path: &str,
+) -> Result<(), RefactorError> {
+    // 创建 ZIP 文件
+    let file = File::create(export_path)
+        .map_err(|e| RefactorError::IoError(format!("无法创建输出文件: {}", e)))?;
+
+    let mut zip = ZipWriter::new(file);
+
+    // 首先添加 mimetype 文件（不压缩）
+    let options_mimetype = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("mimetype", options_mimetype)
+        .map_err(|e| RefactorError::IoError(format!("无法添加 mimetype: {}", e)))?;
+    zip.write_all(b"application/epub+zip")
+        .map_err(|e| RefactorError::IoError(format!("无法写入 mimetype: {}", e)))?;
+
+    // 添加 META-INF/container.xml
+    zip.start_file("META-INF/container.xml", FileOptions::<()>::default())
+        .map_err(|e| RefactorError::IoError(format!("无法添加 container.xml: {}", e)))?;
+    let container_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"##;
+    zip.write_all(container_xml.as_bytes())
+        .map_err(|e| RefactorError::IoError(format!("无法写入 container.xml: {}", e)))?;
+
+    // 递归添加 OEBPS 目录下的所有文件
+    let oebps_path = Path::new(storage_path).join("OEBPS");
+    add_directory_to_zip(&mut zip, &oebps_path, "OEBPS")?;
+
+    // 完成 ZIP 文件
+    zip.finish()
+        .map_err(|e| RefactorError::IoError(format!("无法完成 ZIP 文件: {}", e)))?;
+
+    Ok(())
 }
 
 /// 获取重构后的 EPUB 文件路径

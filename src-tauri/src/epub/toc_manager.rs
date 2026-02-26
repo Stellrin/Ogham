@@ -207,6 +207,11 @@ impl TocManager {
         let close_tag_lower = close_tag.to_lowercase();
 
         while search_pos < content.len() {
+            // 确保 search_pos 在字符边界上，避免 UTF-8 多字节字符分割问题
+            if !content.is_char_boundary(search_pos) {
+                search_pos += 1;
+                continue;
+            }
             // 检查是否是自闭合标签（如 <br/>, <img/> 等）
             let lower_slice = content[search_pos..].to_lowercase();
 
@@ -370,7 +375,8 @@ impl TocManager {
     }
 
     /// 从 content_src 提取实际文件路径
-    pub fn parse_content_src(content_src: &str, base_path: &str) -> String {
+    /// 返回形如 "OEBPS/Text/xxx.xhtml" 的路径，与 StandardChapter.standard_path 保持一致
+    pub fn parse_content_src(content_src: &str, _base_path: &str) -> String {
         if content_src.is_empty() {
             return String::new();
         }
@@ -378,13 +384,18 @@ impl TocManager {
         // 移除锚点部分（如 #chapter1）
         let path_part = content_src.split('#').next().unwrap_or(content_src);
 
-        // 如果已经是完整路径，直接返回
-        if path_part.starts_with("Text/") || path_part.starts_with("OEBPS/Text/") {
+        // 已经是完整的 OEBPS/ 路径，直接返回
+        if path_part.starts_with("OEBPS/") {
             return path_part.to_string();
         }
 
-        // 添加 Text/ 前缀
-        format!("Text/{}", path_part)
+        // Text/ 开头，补全 OEBPS/ 前缀
+        if path_part.starts_with("Text/") {
+            return format!("OEBPS/{}", path_part);
+        }
+
+        // 其他情况，补全 OEBPS/Text/ 前缀
+        format!("OEBPS/Text/{}", path_part)
     }
 
     /// 更新导航文件 (nav.xhtml)

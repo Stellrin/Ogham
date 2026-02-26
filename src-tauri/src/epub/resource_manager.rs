@@ -370,8 +370,16 @@ fn extract_resources_from_content(
             continue;
         }
 
-        // 解析相对路径
-        let full_path = resolve_path(chapter_dir, resource_path);
+        // 解析路径：区分绝对路径（OEBPS/ 或 Images/ 开头）和相对路径
+        let full_path = if resource_path.starts_with("OEBPS/")
+            || resource_path.starts_with("Images/")
+        {
+            // 绝对路径（相对于 EPUB 根目录），直接使用
+            resource_path.to_string()
+        } else {
+            // 相对路径，需要基于章节目录解析
+            resolve_path(chapter_dir, resource_path)
+        };
 
         // 如果已经提取过这个资源，跳过
         if resources.contains_key(&captures[2]) {

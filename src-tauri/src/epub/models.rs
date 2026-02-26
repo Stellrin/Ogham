@@ -315,3 +315,43 @@ pub struct TocUpdateRequest {
     pub new_label: Option<String>,
     pub new_content_src: Option<String>,
 }
+
+/// 图片批量处理结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImageProcessResult {
+    pub task_id: String,
+    pub total_chapters: u32,
+    pub processed_chapters: u32,
+    pub detected_raw_matches: u32,
+    pub detected_unique_urls: u32,
+    pub successful_images: u32,
+    pub failed_images: u32,
+    pub skipped_duplicates: u32,
+    pub inserted_images: u32,
+    pub failures: Vec<ImageProcessFailure>,
+}
+
+/// 单张图片处理失败详情
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImageProcessFailure {
+    pub chapter_path: String,
+    pub image_url: String,
+    pub error: String,
+}
+
+/// 图片处理进度事件
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImageProcessProgress {
+    pub task_id: String,
+    pub chapter_path: String,
+    pub current_chapter_index: u32,
+    pub total_chapters: u32,
+    pub image_url: Option<String>,
+    pub processed_unique_images: u32,
+    pub total_unique_images: u32,
+    pub successful_images: u32,
+    pub failed_images: u32,
+    pub skipped_duplicates: u32,
+    pub stage: String,
+    pub message: String,
+}

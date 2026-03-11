@@ -1,5 +1,4 @@
-use crate::epub::models::{TocChapterDto, TocOrderDto};
-use crate::epub::models::{NavigationEntry, RefactorError, StandardManifest, StandardSpine};
+use crate::epub::models::{Navigation, RefactorError, StandardManifest, TocChapterDto, TocEntry, TocOrderDto};
 use std::fs;
 use std::path::Path;
 
@@ -382,20 +381,31 @@ impl TocManager {
         }
 
         // 移除锚点部分（如 #chapter1）
-        let path_part = content_src.split('#').next().unwrap_or(content_src);
+        let path_part = content_src
+            .split('#')
+            .next()
+            .unwrap_or(content_src)
+            .trim_start_matches("./")
+            .trim_start_matches('/');
 
         // 已经是完整的 OEBPS/ 路径，直接返回
         if path_part.starts_with("OEBPS/") {
             return path_part.to_string();
         }
 
-        // Text/ 开头，补全 OEBPS/ 前缀
-        if path_part.starts_with("Text/") {
+        // 已经是标准目录下的相对路径，补全 OEBPS/ 前缀
+        if ["Text/", "Styles/", "Images/", "Fonts/", "Misc/"]
+            .iter()
+            .any(|prefix| path_part.starts_with(prefix))
+        {
             return format!("OEBPS/{}", path_part);
         }
 
-        // 其他情况，补全 OEBPS/Text/ 前缀
-        format!("OEBPS/Text/{}", path_part)
+        if path_part.ends_with(".xhtml") || path_part.ends_with(".html") {
+            return format!("OEBPS/Text/{}", path_part);
+        }
+
+        format!("OEBPS/{}", path_part)
     }
 
     /// 更新导航文件 (nav.xhtml)
@@ -412,19 +422,9 @@ impl TocManager {
         let content = fs::read_to_string(&nav_path)
             .map_err(|e| RefactorError::IoError(format!("Failed to read nav.xhtml: {}", e)))?;
 
-        // 生成新的 navMap 内容
-        let new_nav_map = Self::generate_nav_map(toc, 0);
-
-        // 替换旧的 navMap
-        let new_content = if let Some(start) = content.find("<navMap") {
-            if let Some(end_tag) = content[start..].find("</navMap>") {
-                let end = start + end_tag + "</navMap>".len();
-                let before = &content[..start];
-                let after = &content[end..];
-                format!("{}{}{}", before, new_nav_map, after)
-            } else {
-                content
-            }
+        let navigation = Self::toc_to_navigation(toc);
+        let new_content = if content.contains("<nav") {
+            crate::epub::nav_builder::render_nav_xhtml(&navigation)?
         } else {
             content
         };
@@ -449,19 +449,9 @@ impl TocManager {
         let content = fs::read_to_string(&ncx_path)
             .map_err(|e| RefactorError::IoError(format!("Failed to read toc.ncx: {}", e)))?;
 
-        // 生成新的 navMap 内容
-        let new_nav_map = Self::generate_ncx_nav_map(toc, 0);
-
-        // 替换旧的 navMap
-        let new_content = if let Some(start) = content.find("<navMap") {
-            if let Some(end_tag) = content[start..].find("</navMap>") {
-                let end = start + end_tag + "</navMap>".len();
-                let before = &content[..start];
-                let after = &content[end..];
-                format!("{}{}{}", before, new_nav_map, after)
-            } else {
-                content
-            }
+        let navigation = Self::toc_to_navigation(toc);
+        let new_content = if content.contains("<navMap") {
+            crate::epub::nav_builder::render_toc_ncx(&navigation)?
         } else {
             content
         };
@@ -606,64 +596,21 @@ impl TocManager {
         }
     }
 
-    /// 生成 nav.xhtml 格式的 navMap
-    fn generate_nav_map(toc: &[TocChapterDto], level: usize) -> String {
-        let mut result = String::new();
-        result.push_str(&format!("<navMap>\n"));
-
-        for entry in toc {
-            result.push_str(&format!(
-                "  <navPoint id=\"{}\" playOrder=\"{}\">\n",
-                entry.id, entry.order
-            ));
-            result.push_str(&format!(
-                "    <navLabel><text>{}</text></navLabel>\n",
-                Self::escape_xml(&entry.label)
-            ));
-            result.push_str(&format!(
-                "    <content src=\"{}\" />\n",
-                entry.content_src
-            ));
-
-            if !entry.children.is_empty() {
-                result.push_str(&Self::generate_nav_map(&entry.children, level + 1));
-            }
-
-            result.push_str("  </navPoint>\n");
+    fn toc_to_navigation(toc: &[TocChapterDto]) -> Navigation {
+        fn convert(entries: &[TocChapterDto]) -> Vec<TocEntry> {
+            entries
+                .iter()
+                .map(|entry| TocEntry {
+                    id: entry.id.clone(),
+                    label: entry.label.clone(),
+                    content_src: entry.content_src.clone(),
+                    level: entry.level,
+                    children: convert(&entry.children),
+                })
+                .collect()
         }
 
-        result.push_str("</navMap>");
-        result
-    }
-
-    /// 生成 NCX 格式的 navMap
-    fn generate_ncx_nav_map(toc: &[TocChapterDto], level: usize) -> String {
-        let mut result = String::new();
-        result.push_str("<navMap>\n");
-
-        for entry in toc {
-            result.push_str(&format!(
-                "  <navPoint id=\"{}\" playOrder=\"{}\">\n",
-                entry.id, entry.order
-            ));
-            result.push_str(&format!(
-                "    <navLabel><text>{}</text></navLabel>\n",
-                Self::escape_xml(&entry.label)
-            ));
-            result.push_str(&format!(
-                "    <content src=\"{}\" />\n",
-                entry.content_src
-            ));
-
-            if !entry.children.is_empty() {
-                result.push_str(&Self::generate_ncx_nav_map(&entry.children, level + 1));
-            }
-
-            result.push_str("  </navPoint>\n");
-        }
-
-        result.push_str("</navMap>");
-        result
+        Navigation { toc: convert(toc) }
     }
 
     /// 提取 XML 属性
@@ -737,15 +684,6 @@ impl TocManager {
         }
 
         None
-    }
-
-    /// XML 转义
-    fn escape_xml(s: &str) -> String {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;")
     }
 }
 
@@ -837,4 +775,25 @@ fn convert_order_to_toc(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_content_src_preserves_standard_directories() {
+        assert_eq!(
+            TocManager::parse_content_src("Text/part1/chapter.xhtml", ""),
+            "OEBPS/Text/part1/chapter.xhtml"
+        );
+        assert_eq!(
+            TocManager::parse_content_src("Images/cover.jpg", ""),
+            "OEBPS/Images/cover.jpg"
+        );
+        assert_eq!(
+            TocManager::parse_content_src("chapter.xhtml#frag", ""),
+            "OEBPS/Text/chapter.xhtml"
+        );
+    }
 }

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useEpubStore } from '../store/epubStore';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName } from '../utils/epubPathUtils';
+import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName, resolveEpubPath } from '../utils/epubPathUtils';
 import './EpubReader.css';
 
 export const EpubReader: React.FC = () => {
@@ -88,7 +88,7 @@ export const EpubReader: React.FC = () => {
     if (!doc) return;
 
     // Extract filename from path for display
-    const filename = imagePath.split('/').pop() || imagePath;
+    const filename = escapeHtml(imagePath.split('/').pop() || imagePath);
 
     const imageHtml = `
       <!DOCTYPE html>
@@ -174,6 +174,7 @@ export const EpubReader: React.FC = () => {
     const doc = iframe.contentDocument;
     if (!doc) return;
 
+    const sanitizedHtml = sanitizeEpubHtml(html);
     const enhancedHtml = `
       <!DOCTYPE html>
       <html>
@@ -217,7 +218,7 @@ export const EpubReader: React.FC = () => {
           </style>
         </head>
         <body>
-          ${html}
+          ${sanitizedHtml}
         </body>
       </html>
     `;
@@ -306,15 +307,11 @@ export const EpubReader: React.FC = () => {
 
     // 检查是否为当前文件的锚点（如 "current.xhtml#section2" 或同文件引用）
     if (parsed.chapterPath && readerState.currentChapterPath) {
-      const currentFileName = readerState.currentChapterPath.split('/').pop() || '';
-      const targetFileName = parsed.chapterPath.split('/').pop() || parsed.chapterPath;
+      const currentBasePath = readerState.currentChapterPath.split('/').slice(0, -1).join('/');
+      const resolvedTargetPath = normalizePath(resolveEpubPath(currentBasePath, parsed.chapterPath));
+      const currentPath = normalizePath(readerState.currentChapterPath);
 
-      // 如果目标文件名与当前文件名相同（忽略扩展名差异），视为同页面锚点
-      const currentFileNameNoExt = currentFileName.replace(/\.(x?html?)$/, '');
-      const targetFileNameNoExt = targetFileName.replace(/\.(x?html?)$/, '');
-
-      if (currentFileNameNoExt && targetFileNameNoExt &&
-          currentFileNameNoExt.toLowerCase() === targetFileNameNoExt.toLowerCase()) {
+      if (resolvedTargetPath === currentPath) {
         event.preventDefault();
         scrollToAnchor(parsed.anchor);
         return;
@@ -392,6 +389,7 @@ export const EpubReader: React.FC = () => {
             ref={iframeRef}
             className="reader-iframe"
             title="EPUB Reader"
+            sandbox="allow-same-origin"
           />
           <ReaderControls
             fontSize={readerState.fontSize}
@@ -404,6 +402,55 @@ export const EpubReader: React.FC = () => {
     </div>
   );
 };
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeEpubHtml(html: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<body>${html}</body>`, 'text/html');
+
+  doc.querySelectorAll('script, iframe, object, embed, base, form').forEach((node) => node.remove());
+  doc.querySelectorAll('meta[http-equiv]').forEach((node) => {
+    const value = node.getAttribute('http-equiv')?.toLowerCase();
+    if (value === 'refresh') {
+      node.remove();
+    }
+  });
+
+  doc.body.querySelectorAll('*').forEach((element) => {
+    for (const attr of [...element.attributes]) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim();
+
+      if (name.startsWith('on')) {
+        element.removeAttribute(attr.name);
+        continue;
+      }
+
+      if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^javascript:/i.test(value)) {
+        element.removeAttribute(attr.name);
+        continue;
+      }
+
+      if (name === 'style' && /(expression\s*\(|url\s*\(\s*['"]?\s*javascript:)/i.test(value)) {
+        element.removeAttribute(attr.name);
+      }
+    }
+  });
+
+  return doc.body.innerHTML;
+}
 
 interface ReaderControlsProps {
   fontSize: number;

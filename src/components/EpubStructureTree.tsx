@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useEpubStore, CombinedChapter, TocChapter, NavigationEntry } from '../store/epubStore';
-import { getChapterPath, getChapterName } from '../utils/epubPathUtils';
+import { findChapterByHref, getChapterPath, getChapterName } from '../utils/epubPathUtils';
 import { TocTreeView } from './TocTreeView';
 
 // 将 NavigationEntry 转换为 TocChapter 格式
@@ -8,11 +8,7 @@ const convertNavigationToToc = (navigation: NavigationEntry[], chapters: Combine
   const flattenChapters = (items: NavigationEntry[], level: number, orderRef: { current: number }): TocChapter[] => {
     return items.map((item) => {
       const order = orderRef.current++;
-      // 查找对应的章节文件路径
-      const chapter = chapters.find((ch) => {
-        const chPath = getChapterPath(ch);
-        return chPath && (chPath.includes(item.content_src) || item.content_src.includes(chPath.split('/').pop() || ''));
-      });
+      const chapter = findChapterByHref(item.content_src, chapters);
       const filePath = chapter ? getChapterPath(chapter) : undefined;
 
       return {

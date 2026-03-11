@@ -438,6 +438,7 @@ pub async fn reload_epub_structure_command(
         }
     }
 
+    let metadata = parse_opf_metadata(&opf_content, &epub_id);
     let manifest = StandardManifest { items: manifest_items };
     let spine = StandardSpine { itemrefs: spine_itemrefs };
 
@@ -448,13 +449,10 @@ pub async fn reload_epub_structure_command(
     let chapters: Vec<StandardChapter> = manifest.items
         .iter()
         .filter(|item| {
-            item.media_type == "application/xhtml+xml" || item.media_type == "text/html"
+            is_renderable_chapter_item(item)
         })
         .filter_map(|item| {
-            let title = navigation
-                .iter()
-                .find(|toc| toc.content_src == item.href)
-                .map(|toc| toc.label.clone());
+            let title = find_navigation_title(&navigation, &item.href);
 
             let original_filename = item.href.rsplit('/').next().unwrap_or(&item.href).to_string();
             let standard_path = format!("OEBPS/{}", item.href);
@@ -462,7 +460,7 @@ pub async fn reload_epub_structure_command(
             let order = spine.itemrefs
                 .iter()
                 .position(|spine_item| spine_item.idref == item.id)
-                .unwrap_or(0);
+                .unwrap_or(spine.itemrefs.len());
 
             Some(StandardChapter {
                 id: item.id.clone(),
@@ -504,12 +502,7 @@ pub async fn reload_epub_structure_command(
 
     Ok(RefactoredEpubResult {
         epub_id: epub_id.clone(),
-        metadata: EpubMetadata {
-            title: epub_id.clone(),
-            author: None,
-            language: None,
-            identifier: epub_id.clone(),
-        },
+        metadata,
         structure,
         storage_path,
     })
@@ -737,4 +730,82 @@ fn extract_ncx_content_src(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn is_renderable_chapter_item(item: &StandardManifestItem) -> bool {
+    (item.media_type == "application/xhtml+xml" || item.media_type == "text/html")
+        && !item
+            .properties
+            .as_ref()
+            .map(|props| props.iter().any(|prop| prop == "nav"))
+            .unwrap_or(false)
+}
+
+fn find_navigation_title(entries: &[NavigationEntry], href: &str) -> Option<String> {
+    let normalized_href = href.split('#').next().unwrap_or(href);
+
+    for entry in entries {
+        if entry.content_src.split('#').next().unwrap_or(&entry.content_src) == normalized_href {
+            return Some(entry.label.clone());
+        }
+
+        if let Some(title) = find_navigation_title(&entry.children, href) {
+            return Some(title);
+        }
+    }
+
+    None
+}
+
+fn parse_opf_metadata(opf_content: &str, fallback_identifier: &str) -> EpubMetadata {
+    let identifier = extract_xml_tag(opf_content, "dc:identifier")
+        .unwrap_or_else(|| fallback_identifier.to_string());
+
+    EpubMetadata {
+        title: extract_xml_tag(opf_content, "dc:title")
+            .unwrap_or_else(|| fallback_identifier.to_string()),
+        author: extract_xml_tag(opf_content, "dc:creator"),
+        language: extract_xml_tag(opf_content, "dc:language"),
+        identifier,
+    }
+}
+
+fn extract_xml_tag(content: &str, tag_name: &str) -> Option<String> {
+    let close_tag = format!("</{}>", tag_name);
+    let open_tag_start = format!("<{}", tag_name);
+    let start = content.find(&open_tag_start)?;
+    let open_end = content[start..].find('>')? + start;
+    let after_start = open_end + 1;
+    let end = content[after_start..].find(&close_tag)? + after_start;
+    let value = content[after_start..end].trim();
+
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_opf_metadata_reads_original_values() {
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package>
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">book-123</dc:identifier>
+    <dc:title>Example Book</dc:title>
+    <dc:creator>Author</dc:creator>
+    <dc:language>zh-CN</dc:language>
+  </metadata>
+</package>"#;
+
+        let metadata = parse_opf_metadata(opf, "fallback-id");
+        assert_eq!(metadata.identifier, "book-123");
+        assert_eq!(metadata.title, "Example Book");
+        assert_eq!(metadata.author.as_deref(), Some("Author"));
+        assert_eq!(metadata.language.as_deref(), Some("zh-CN"));
+    }
 }

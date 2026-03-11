@@ -75,7 +75,13 @@ fn generate_epub_id(metadata: &EpubMetadata) -> String {
         .take(20)
         .collect::<String>();
 
-    format!("{}-{}", title_part, timestamp)
+    let safe_title = if title_part.is_empty() {
+        "epub".to_string()
+    } else {
+        title_part
+    };
+
+    format!("{}-{}", safe_title, timestamp)
 }
 
 /// 构建标准化清单和阅读顺序
@@ -358,15 +364,11 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
         chapters: refactored.manifest.items
             .iter()
             .filter(|item| {
-                item.media_type == "application/xhtml+xml" ||
-                item.media_type == "text/html"
+                is_renderable_chapter_item(item)
             })
             .filter_map(|item| {
                 // 从章节中查找标题
-                let title = refactored.navigation.toc
-                    .iter()
-                    .find(|toc| toc.content_src == item.href)
-                    .map(|toc| toc.label.clone());
+                let title = find_navigation_title(&refactored.navigation.toc, &item.href);
 
                 // 提取文件名
                 let original_filename = item.href.rsplit('/').next().unwrap_or(&item.href).to_string();
@@ -378,7 +380,7 @@ pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEp
                 let order = refactored.spine.itemrefs
                     .iter()
                     .position(|spine_item| spine_item.idref == item.id)
-                    .unwrap_or(0);
+                    .unwrap_or(refactored.spine.itemrefs.len());
 
                 Some(StandardChapter {
                     id: item.id.clone(),
@@ -428,4 +430,29 @@ fn convert_navigation_to_frontend(toc: &[TocEntry]) -> Vec<NavigationEntry> {
         level: entry.level,
         children: convert_navigation_to_frontend(&entry.children),
     }).collect()
+}
+
+fn is_renderable_chapter_item(item: &StandardManifestItem) -> bool {
+    (item.media_type == "application/xhtml+xml" || item.media_type == "text/html")
+        && !item
+            .properties
+            .as_ref()
+            .map(|props| props.iter().any(|prop| prop == "nav"))
+            .unwrap_or(false)
+}
+
+fn find_navigation_title(entries: &[TocEntry], href: &str) -> Option<String> {
+    let normalized_href = href.split('#').next().unwrap_or(href);
+
+    for entry in entries {
+        if entry.content_src.split('#').next().unwrap_or(&entry.content_src) == normalized_href {
+            return Some(entry.label.clone());
+        }
+
+        if let Some(title) = find_navigation_title(&entry.children, href) {
+            return Some(title);
+        }
+    }
+
+    None
 }

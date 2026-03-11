@@ -273,6 +273,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     set((state) => ({
       epubs: state.epubs.filter((epub) => epub.id !== id),
       selectedEpubId: state.selectedEpubId === id ? null : state.selectedEpubId,
+      tocEntries: state.selectedEpubId === id ? [] : state.tocEntries,
     })),
 
   selectEpub: async (id: string) => {
@@ -283,11 +284,15 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       selectedEpubId: id,
       readerState: defaultReaderState,
       viewMode: 'file',
+      tocEntries: [],
+      expandedTocIds: new Set<string>(),
     }));
 
     // 选择 EPUB 后自动重构
     if (epub && !epub.refactoredStructure) {
       await get().refactorEpub(id);
+    } else if (epub?.epubId) {
+      await get().loadTocEntries(epub.epubId);
     }
   },
 
@@ -320,17 +325,22 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     })),
 
   clearRefactoredStructure: (id) =>
-    set((state) => ({
-      epubs: state.epubs.map((epub) =>
-        epub.id === id
-          ? {
-              ...epub,
-              refactoredStructure: undefined,
-              epubId: undefined,
-            }
-          : epub
-      ),
-    })),
+    set((state) => {
+      const isSelected = state.selectedEpubId === id;
+      return {
+        epubs: state.epubs.map((epub) =>
+          epub.id === id
+            ? {
+                ...epub,
+                refactoredStructure: undefined,
+                epubId: undefined,
+              }
+            : epub
+        ),
+        tocEntries: isSelected ? [] : state.tocEntries,
+        expandedTocIds: isSelected ? new Set<string>() : state.expandedTocIds,
+      };
+    }),
 
   loadEpubStructure: async (id: string) => {
     const state = get();
@@ -631,6 +641,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       set({ tocEntries: entries });
     } catch (error) {
       console.error('Failed to load TOC entries:', error);
+      set({ tocEntries: [] });
     }
   },
 

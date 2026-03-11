@@ -8,7 +8,7 @@ pub fn generate_toc_ncx(
     navigation: &Navigation,
     base_path: &str,
 ) -> Result<(), RefactorError> {
-    let ncx_content = build_ncx_xml(navigation)?;
+    let ncx_content = render_toc_ncx(navigation)?;
 
     let ncx_path = Path::new(base_path).join("OEBPS/toc.ncx");
     let mut file = File::create(&ncx_path)
@@ -25,7 +25,7 @@ pub fn generate_nav_xhtml(
     navigation: &Navigation,
     base_path: &str,
 ) -> Result<(), RefactorError> {
-    let nav_content = build_nav_xhtml(navigation)?;
+    let nav_content = render_nav_xhtml(navigation)?;
 
     let nav_path = Path::new(base_path).join("OEBPS/nav.xhtml");
     let mut file = File::create(&nav_path)
@@ -35,6 +35,16 @@ pub fn generate_nav_xhtml(
         .map_err(|e| RefactorError::IoError(format!("无法写入 NAV 文件: {}", e)))?;
 
     Ok(())
+}
+
+/// 渲染完整的 toc.ncx 内容
+pub fn render_toc_ncx(navigation: &Navigation) -> Result<String, RefactorError> {
+    build_ncx_xml(navigation)
+}
+
+/// 渲染完整的 nav.xhtml 内容
+pub fn render_nav_xhtml(navigation: &Navigation) -> Result<String, RefactorError> {
+    build_nav_xhtml(navigation)
 }
 
 /// 构建 NCX XML 内容

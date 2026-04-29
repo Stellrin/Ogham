@@ -30,7 +30,7 @@
 }
 
 .epub-list-content {
-  max-height: 200px;
+  max-height: 160px;
   overflow-y: auto;
   padding: 8px;
 }

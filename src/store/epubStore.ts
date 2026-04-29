@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { findChapterByHref, parseEpubHref } from '../utils/epubPathUtils';
 
 export interface ChapterContent {
   html: string;
@@ -284,6 +285,7 @@ const defaultReaderState: ReaderState = {
 };
 
 const NOTIFICATION_LIMIT = 6;
+const defaultViewMode: ViewMode = 'toc';
 
 function createNotificationId(): string {
   return `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -361,11 +363,114 @@ function toBackendTocOrder(entries: TocChapter[]): BackendTocOrder[] {
   }));
 }
 
+interface FirstTocPage {
+  href: string;
+  order: number;
+  ancestorIds: string[];
+}
+
+interface FirstPageSelection {
+  readerState: Partial<ReaderState>;
+  expandedTocIds: string[];
+}
+
+function getFirstTocPage(entries: TocChapter[], ancestorIds: string[] = []): FirstTocPage | null {
+  for (const entry of entries) {
+    const href = [entry.filePaths?.[0], entry.filePath, entry.contentSrc].find(
+      (path): path is string => Boolean(path?.trim())
+    );
+
+    if (href) {
+      return { href, order: entry.order, ancestorIds };
+    }
+
+    const childPage = getFirstTocPage(entry.children, [...ancestorIds, entry.id]);
+    if (childPage) {
+      return childPage;
+    }
+  }
+
+  return null;
+}
+
+function getFirstNavigationPage(
+  entries: NavigationEntry[],
+  ancestorIds: string[] = [],
+  orderRef = { current: 0 }
+): FirstTocPage | null {
+  for (const entry of entries) {
+    const order = orderRef.current++;
+    const href = entry.content_src?.trim();
+
+    if (href) {
+      return { href, order, ancestorIds };
+    }
+
+    const childPage = getFirstNavigationPage(entry.children, [...ancestorIds, entry.id], orderRef);
+    if (childPage) {
+      return childPage;
+    }
+  }
+
+  return null;
+}
+
+function getFirstChapterByOrder(chapters: StandardChapter[]): StandardChapter | undefined {
+  return [...chapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0];
+}
+
+function createFirstPageSelection(
+  structure: StandardEpubStructure,
+  tocEntries: TocChapter[]
+): FirstPageSelection | null {
+  const chapters = structure.chapters || [];
+  if (chapters.length === 0) return null;
+
+  const tocPage =
+    getFirstTocPage(tocEntries) || getFirstNavigationPage(structure.navigation || []);
+  if (tocPage) {
+    const chapter = findChapterByHref(tocPage.href, chapters);
+    if (chapter) {
+      const { anchor } = parseEpubHref(tocPage.href);
+      return {
+        readerState: {
+          currentChapterIndex: chapter.order ?? tocPage.order,
+          currentChapterPath: chapter.standard_path,
+          scrollPosition: 0,
+          viewingImagePath: null,
+          viewingImageData: null,
+          pendingAnchor: anchor || null,
+        },
+        expandedTocIds: tocPage.ancestorIds,
+      };
+    }
+  }
+
+  const firstChapter = getFirstChapterByOrder(chapters);
+  if (!firstChapter) return null;
+
+  return {
+    readerState: {
+      currentChapterIndex: firstChapter.order ?? 0,
+      currentChapterPath: firstChapter.standard_path,
+      scrollPosition: 0,
+      viewingImagePath: null,
+      viewingImageData: null,
+      pendingAnchor: null,
+    },
+    expandedTocIds: [],
+  };
+}
+
+function isReaderWaitingForFirstPage(readerState: ReaderState): boolean {
+  return !readerState.currentChapterPath && !readerState.viewingImagePath;
+}
+
 export const useEpubStore = create<EpubStore>((set, get) => ({
   epubs: [],
   selectedEpubId: null,
   readerState: defaultReaderState,
-  viewMode: 'file',
+  viewMode: defaultViewMode,
   tocEntries: [],
   expandedTocIds: new Set<string>(),
   isConverting: false,
@@ -479,7 +584,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     set(() => ({
       selectedEpubId: id,
       readerState: defaultReaderState,
-      viewMode: 'file',
+      viewMode: defaultViewMode,
       tocEntries: [],
       expandedTocIds: new Set<string>(),
     }));
@@ -774,11 +879,41 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       const entries = backendEntries.map(normalizeTocChapter);
 
       if (isRequestForSelectedEpub()) {
-        set({ tocEntries: entries });
+        const latestState = get();
+        const selectedEpub = latestState.epubs.find((e) => e.id === latestState.selectedEpubId);
+        const firstPageSelection =
+          selectedEpub?.refactoredStructure && isReaderWaitingForFirstPage(latestState.readerState)
+            ? createFirstPageSelection(selectedEpub.refactoredStructure.structure, entries)
+            : null;
+
+        set({
+          tocEntries: entries,
+          expandedTocIds: firstPageSelection
+            ? new Set([...latestState.expandedTocIds, ...firstPageSelection.expandedTocIds])
+            : latestState.expandedTocIds,
+          readerState: firstPageSelection
+            ? { ...latestState.readerState, ...firstPageSelection.readerState }
+            : latestState.readerState,
+        });
       }
     } catch (error) {
       if (isRequestForSelectedEpub()) {
-        set({ tocEntries: [] });
+        const latestState = get();
+        const selectedEpub = latestState.epubs.find((e) => e.id === latestState.selectedEpubId);
+        const firstPageSelection =
+          selectedEpub?.refactoredStructure && isReaderWaitingForFirstPage(latestState.readerState)
+            ? createFirstPageSelection(selectedEpub.refactoredStructure.structure, [])
+            : null;
+
+        set({
+          tocEntries: [],
+          expandedTocIds: firstPageSelection
+            ? new Set([...latestState.expandedTocIds, ...firstPageSelection.expandedTocIds])
+            : latestState.expandedTocIds,
+          readerState: firstPageSelection
+            ? { ...latestState.readerState, ...firstPageSelection.readerState }
+            : latestState.readerState,
+        });
         get().addNotification({
           kind: 'warning',
           title: '目录加载失败',

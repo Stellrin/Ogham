@@ -66,9 +66,10 @@ body {
 .app-sidebar {
   display: flex;
   flex-direction: column;
-  width: 280px;
-  min-width: 280px;
-  max-width: 280px;
+  width: 340px;
+  min-width: 320px;
+  max-width: 380px;
+  background-color: #ffffff;
   border-right: 1px solid #e0e0e0;
   overflow-y: auto;
 }

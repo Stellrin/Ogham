@@ -372,7 +372,7 @@ export const EpubReader: React.FC = () => {
       {selectedEpub && !readerState.currentChapterPath && !readerState.viewingImagePath && (
         <div className="reader-empty">
           <p>请选择一个章节</p>
-          <p className="hint">在左侧结构树中点击章节开始阅读</p>
+          <p className="hint">在左侧目录中点击章节开始阅读</p>
         </div>
       )}
 

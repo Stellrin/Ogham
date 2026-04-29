@@ -163,13 +163,14 @@
 /* 视图切换器 */
 .view-mode-switcher {
   display: flex;
-  gap: 4px;
-  padding: 8px 16px;
+  gap: 0;
+  padding: 8px 12px;
   border-bottom: 1px solid #e0e0e0;
   background-color: #fafafa;
 }
 
 .view-mode-btn {
+  flex: 1;
   padding: 6px 12px;
   font-size: 12px;
   border: 1px solid #ddd;
@@ -178,6 +179,15 @@
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.15s ease;
+}
+
+.view-mode-btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.view-mode-btn:last-child {
+  margin-left: -1px;
+  border-radius: 0 4px 4px 0;
 }
 
 .view-mode-btn:hover {

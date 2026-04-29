@@ -185,7 +185,7 @@ export const EpubStructureTree: React.FC = () => {
       <div className="structure-tree">
         <div className="structure-empty">
           <p>请选择一个 EPUB 文件</p>
-          <p className="hint">在左侧列表中选择以查看结构</p>
+          <p className="hint">在左侧列表中选择以查看目录</p>
         </div>
       </div>
     );
@@ -203,7 +203,7 @@ export const EpubStructureTree: React.FC = () => {
             </>
           ) : (
             <>
-              <p>结构尚未加载</p>
+              <p>目录尚未加载</p>
               <p className="hint">{selectedEpub.name}</p>
             </>
           )}
@@ -245,23 +245,25 @@ export const EpubStructureTree: React.FC = () => {
   return (
     <div className="structure-tree">
       <div className="structure-header">
-        <h3>EPUB 结构</h3>
+        <h3>{viewMode === 'toc' ? '目录视图' : '文件结构'}</h3>
         <span className="epub-filename">{selectedEpub.name}</span>
       </div>
 
       {/* 视图切换器 */}
       <div className="view-mode-switcher">
         <button
-          className={`view-mode-btn ${viewMode === 'file' ? 'active' : ''}`}
-          onClick={() => setViewMode('file')}
-        >
-          文件
-        </button>
-        <button
           className={`view-mode-btn ${viewMode === 'toc' ? 'active' : ''}`}
           onClick={() => setViewMode('toc')}
+          aria-pressed={viewMode === 'toc'}
         >
           目录
+        </button>
+        <button
+          className={`view-mode-btn ${viewMode === 'file' ? 'active' : ''}`}
+          onClick={() => setViewMode('file')}
+          aria-pressed={viewMode === 'file'}
+        >
+          文件
         </button>
       </div>
 

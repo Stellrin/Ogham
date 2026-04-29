@@ -1,6 +1,6 @@
-import type { Chapter, StandardChapter } from '../store/epubStore';
+import type { StandardChapter } from '../store/epubStore';
 
-export type CombinedChapter = Chapter | StandardChapter;
+export type CombinedChapter = StandardChapter;
 
 /**
  * 解析 EPUB 链接，提取章节路径和锚点
@@ -68,21 +68,16 @@ export function resolveEpubPath(basePath: string, relativePath: string): string 
 }
 
 /**
- * 获取章节路径（兼容 Chapter 和 StandardChapter）
+ * 获取标准化章节路径
  */
 export function getChapterPath(chapter: CombinedChapter): string {
-  return 'path' in chapter ? chapter.path : chapter.standard_path;
+  return chapter.standard_path;
 }
 
 /**
- * 获取章节名称（兼容 Chapter 和 StandardChapter）
- * 文件视图优先使用原始文件名，目录视图可使用标题
+ * 获取标准化章节名称
  */
 export function getChapterName(chapter: CombinedChapter): string {
-  if ('name' in chapter) {
-    return chapter.name;
-  }
-  // 优先使用原始文件名，保持文件视图与文件名一致
   return chapter.original_filename || chapter.title || '';
 }
 

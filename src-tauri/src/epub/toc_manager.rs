@@ -1,4 +1,10 @@
-use crate::epub::models::{Navigation, RefactorError, StandardManifest, TocChapterDto, TocEntry, TocOrderDto};
+use crate::epub::epub_path;
+use crate::epub::models::{
+    Navigation, RefactorError, StandardManifest, StandardSpine, StandardSpineItemref,
+    TocChapterDto, TocEntry, TocOrderDto,
+};
+use crate::epub::opf_document;
+use crate::epub::resource_index;
 use std::fs;
 use std::path::Path;
 
@@ -46,7 +52,10 @@ impl TocManager {
     }
 
     /// 从 EPUB 3.0 nav.xhtml 加载目录（HTML 格式）
-    fn load_from_nav_epub3(content: &str, base_path: &str) -> Result<Vec<TocChapterDto>, RefactorError> {
+    fn load_from_nav_epub3(
+        content: &str,
+        base_path: &str,
+    ) -> Result<Vec<TocChapterDto>, RefactorError> {
         let mut entries = Vec::new();
         let mut order_counter = 0usize;
 
@@ -69,13 +78,14 @@ impl TocManager {
         while let Some(nav_start) = content[search_pos..].find("<nav") {
             let nav_start = search_pos + nav_start;
             // 找到 nav 元素的结束位置
-            let nav_end = match Self::find_matching_close_html(&content[nav_start..], "<nav", "</nav>") {
-                Some(end) => nav_start + end,
-                None => {
-                    search_pos = nav_start + 4;
-                    continue;
-                }
-            };
+            let nav_end =
+                match Self::find_matching_close_html(&content[nav_start..], "<nav", "</nav>") {
+                    Some(end) => nav_start + end,
+                    None => {
+                        search_pos = nav_start + 4;
+                        continue;
+                    }
+                };
 
             let nav_content = &content[nav_start..nav_end];
 
@@ -101,7 +111,8 @@ impl TocManager {
         while let Some(li_start) = content[search_pos..].find("<li") {
             let li_start = search_pos + li_start;
             // 找到 </li> 结束位置
-            let li_end = match Self::find_matching_close_html(&content[li_start..], "<li", "</li>") {
+            let li_end = match Self::find_matching_close_html(&content[li_start..], "<li", "</li>")
+            {
                 Some(end) => li_start + end,
                 None => {
                     search_pos = li_start + 3;
@@ -117,8 +128,7 @@ impl TocManager {
                     let a_content = &li_content[a_start..a_start + a_end + 4];
 
                     // 提取 href
-                    let href = Self::extract_html_attribute(a_content, "href")
-                        .unwrap_or_default();
+                    let href = Self::extract_html_attribute(a_content, "href").unwrap_or_default();
 
                     // 提取文本内容
                     let label = Self::extract_text_content(a_content)
@@ -134,11 +144,21 @@ impl TocManager {
                         // 检查是否有子 <ol>
                         let mut children = Vec::new();
                         if let Some(ol_start) = li_content.find("<ol") {
-                            let ol_end = Self::find_matching_close_html(&li_content[ol_start..], "<ol", "</ol>")
-                                .map(|end| ol_start + end)
-                                .unwrap_or(li_content.len());
+                            let ol_end = Self::find_matching_close_html(
+                                &li_content[ol_start..],
+                                "<ol",
+                                "</ol>",
+                            )
+                            .map(|end| ol_start + end)
+                            .unwrap_or(li_content.len());
                             let ol_content = &li_content[ol_start..ol_end];
-                            Self::parse_ol_elements(ol_content, level + 1, &mut children, order_counter, base_path);
+                            Self::parse_ol_elements(
+                                ol_content,
+                                level + 1,
+                                &mut children,
+                                order_counter,
+                                base_path,
+                            );
                         }
 
                         entries.push(TocChapterDto {
@@ -159,7 +179,10 @@ impl TocManager {
     }
 
     /// 从 EPUB 2.0 NCX 格式加载（复用原有逻辑）
-    fn load_from_nav_ncx_format(content: &str, base_path: &str) -> Result<Vec<TocChapterDto>, RefactorError> {
+    fn load_from_nav_ncx_format(
+        content: &str,
+        base_path: &str,
+    ) -> Result<Vec<TocChapterDto>, RefactorError> {
         let mut entries = Vec::new();
         let mut order_counter = 0usize;
 
@@ -217,7 +240,9 @@ impl TocManager {
             if lower_slice.starts_with(&open_tag_lower) {
                 // 检查是否有 /> 自闭合
                 let after_open = &content[search_pos + open_tag.len()..];
-                if after_open.starts_with("/>") || after_open.starts_with(" ") && after_open.contains("/>") {
+                if after_open.starts_with("/>")
+                    || after_open.starts_with(" ") && after_open.contains("/>")
+                {
                     // 自闭合标签，不增加深度
                     search_pos += open_tag.len() + 2;
                     continue;
@@ -262,9 +287,13 @@ impl TocManager {
         let mut search_pos = 0;
         while let Some(point_start) = nav_map_content[search_pos..].find("<navPoint") {
             let point_start = search_pos + point_start;
-            let point_end = Self::find_matching_close(&nav_map_content[point_start..], "<navPoint", "</navPoint>")
-                .map(|end| point_start + end)
-                .unwrap_or(nav_map_content.len());
+            let point_end = Self::find_matching_close(
+                &nav_map_content[point_start..],
+                "<navPoint",
+                "</navPoint>",
+            )
+            .map(|end| point_start + end)
+            .unwrap_or(nav_map_content.len());
 
             let nav_point_content = &nav_map_content[point_start..point_end];
 
@@ -286,7 +315,13 @@ impl TocManager {
 
             // 递归处理子元素
             let mut children = Vec::new();
-            Self::parse_nav_elements(nav_point_content, level + 1, &mut children, order_counter, base_path);
+            Self::parse_nav_elements(
+                nav_point_content,
+                level + 1,
+                &mut children,
+                order_counter,
+                base_path,
+            );
 
             let order = *order_counter;
             *order_counter += 1;
@@ -320,7 +355,13 @@ impl TocManager {
         };
 
         let nav_map_content = &content[nav_map_start..];
-        Self::parse_ncx_navmap(nav_map_content, 0, &mut entries, &mut order_counter, base_path);
+        Self::parse_ncx_navmap(
+            nav_map_content,
+            0,
+            &mut entries,
+            &mut order_counter,
+            base_path,
+        );
 
         Ok(entries)
     }
@@ -336,9 +377,10 @@ impl TocManager {
         let mut search_pos = 0;
         while let Some(point_start) = content[search_pos..].find("<navPoint") {
             let point_start = search_pos + point_start;
-            let point_end = Self::find_matching_close(&content[point_start..], "<navPoint", "</navPoint>")
-                .map(|end| point_start + end)
-                .unwrap_or(content.len());
+            let point_end =
+                Self::find_matching_close(&content[point_start..], "<navPoint", "</navPoint>")
+                    .map(|end| point_start + end)
+                    .unwrap_or(content.len());
 
             let nav_point_content = &content[point_start..point_end];
 
@@ -348,13 +390,18 @@ impl TocManager {
             let label = Self::extract_ncx_label(nav_point_content)
                 .unwrap_or_else(|| "Untitled".to_string());
 
-            let content_src = Self::extract_ncx_content_src(nav_point_content)
-                .unwrap_or_default();
+            let content_src = Self::extract_ncx_content_src(nav_point_content).unwrap_or_default();
 
             let file_path = Self::parse_content_src(&content_src, base_path);
 
             let mut children = Vec::new();
-            Self::parse_ncx_navmap(nav_point_content, level + 1, &mut children, order_counter, base_path);
+            Self::parse_ncx_navmap(
+                nav_point_content,
+                level + 1,
+                &mut children,
+                order_counter,
+                base_path,
+            );
 
             let order = *order_counter;
             *order_counter += 1;
@@ -376,47 +423,17 @@ impl TocManager {
     /// 从 content_src 提取实际文件路径
     /// 返回形如 "OEBPS/Text/xxx.xhtml" 的路径，与 StandardChapter.standard_path 保持一致
     pub fn parse_content_src(content_src: &str, _base_path: &str) -> String {
-        if content_src.is_empty() {
-            return String::new();
-        }
-
-        // 移除锚点部分（如 #chapter1）
-        let path_part = content_src
-            .split('#')
-            .next()
-            .unwrap_or(content_src)
-            .trim_start_matches("./")
-            .trim_start_matches('/');
-
-        // 已经是完整的 OEBPS/ 路径，直接返回
-        if path_part.starts_with("OEBPS/") {
-            return path_part.to_string();
-        }
-
-        // 已经是标准目录下的相对路径，补全 OEBPS/ 前缀
-        if ["Text/", "Styles/", "Images/", "Fonts/", "Misc/"]
-            .iter()
-            .any(|prefix| path_part.starts_with(prefix))
-        {
-            return format!("OEBPS/{}", path_part);
-        }
-
-        if path_part.ends_with(".xhtml") || path_part.ends_with(".html") {
-            return format!("OEBPS/Text/{}", path_part);
-        }
-
-        format!("OEBPS/{}", path_part)
+        epub_path::to_standard_content_path(content_src)
     }
 
     /// 更新导航文件 (nav.xhtml)
-    pub fn update_nav_file(
-        toc: &[TocChapterDto],
-        base_path: &str,
-    ) -> Result<(), RefactorError> {
+    pub fn update_nav_file(toc: &[TocChapterDto], base_path: &str) -> Result<(), RefactorError> {
         let nav_path = Path::new(base_path).join("OEBPS/nav.xhtml");
 
         if !nav_path.exists() {
-            return Err(RefactorError::MissingFile("nav.xhtml not found".to_string()));
+            return Err(RefactorError::MissingFile(
+                "nav.xhtml not found".to_string(),
+            ));
         }
 
         let content = fs::read_to_string(&nav_path)
@@ -436,10 +453,7 @@ impl TocManager {
     }
 
     /// 更新 NCX 文件
-    pub fn update_ncx_file(
-        toc: &[TocChapterDto],
-        base_path: &str,
-    ) -> Result<(), RefactorError> {
+    pub fn update_ncx_file(toc: &[TocChapterDto], base_path: &str) -> Result<(), RefactorError> {
         let ncx_path = Path::new(base_path).join("OEBPS/toc.ncx");
 
         if !ncx_path.exists() {
@@ -468,63 +482,34 @@ impl TocManager {
         manifest: &StandardManifest,
         base_path: &str,
     ) -> Result<(), RefactorError> {
-        let opf_path = Path::new(base_path).join("OEBPS/content.opf");
-
-        if !opf_path.exists() {
-            return Err(RefactorError::MissingFile("content.opf not found".to_string()));
-        }
-
-        let content = fs::read_to_string(&opf_path)
-            .map_err(|e| RefactorError::IoError(format!("Failed to read content.opf: {}", e)))?;
-
         // 从目录展平获取所有内容文件
         let flat_toc: Vec<TocChapterDto> = Self::flatten_toc(toc);
 
-        // 生成新的 spine
-        let mut new_spine = String::new();
-        new_spine.push_str("    <spine toc=\"toc\">\n");
-
+        let mut itemrefs = Vec::new();
         for entry in flat_toc {
             // 查找对应的 manifest 项
-            let href = entry.content_src.split('#').next().unwrap_or(&entry.content_src);
-            let manifest_item = manifest.items.iter()
-                .find(|item| item.href == href);
+            let href = opf_document::relative_href(
+                entry
+                    .content_src
+                    .split('#')
+                    .next()
+                    .unwrap_or(&entry.content_src),
+            );
+            let manifest_item = manifest.items.iter().find(|item| item.href == href);
 
             if let Some(item) = manifest_item {
-                new_spine.push_str(&format!(
-                    "      <itemref idref=\"{}\" />\n",
-                    item.id
-                ));
+                itemrefs.push(StandardSpineItemref {
+                    idref: item.id.clone(),
+                    linear: Some(true),
+                });
             }
         }
 
-        new_spine.push_str("    </spine>");
-
-        // 替换旧的 spine
-        let new_content = if let Some(start) = content.find("<spine") {
-            if let Some(end_tag) = content[start..].find("</spine>") {
-                let end = start + end_tag + "</spine>".len();
-                let before = &content[..start];
-                let after = &content[end..];
-                format!("{}{}{}", before, new_spine, after)
-            } else {
-                content
-            }
-        } else {
-            content
-        };
-
-        fs::write(&opf_path, new_content)
-            .map_err(|e| RefactorError::IoError(format!("Failed to write content.opf: {}", e)))?;
-
-        Ok(())
+        opf_document::write_spine_order(base_path, &StandardSpine { itemrefs })
     }
 
     /// 完整同步（更新所有文件）
-    pub fn sync_toc_changes(
-        epub_id: &str,
-        toc: &[TocChapterDto],
-    ) -> Result<(), RefactorError> {
+    pub fn sync_toc_changes(epub_id: &str, toc: &[TocChapterDto]) -> Result<(), RefactorError> {
         let storage_path = crate::epub::storage::get_epub_storage_path(epub_id);
 
         // 加载 manifest
@@ -539,47 +524,14 @@ impl TocManager {
         // 更新 spine 顺序
         Self::update_spine_order(toc, &manifest, &storage_path)?;
 
+        resource_index::refresh_resource_index(epub_id, &storage_path)?;
+
         Ok(())
     }
 
     /// 加载 manifest
     fn load_manifest(base_path: &str) -> Result<StandardManifest, RefactorError> {
-        let opf_path = Path::new(base_path).join("OEBPS/content.opf");
-        let content = fs::read_to_string(&opf_path)
-            .map_err(|e| RefactorError::IoError(format!("Failed to read content.opf: {}", e)))?;
-
-        let mut items = Vec::new();
-
-        // 解析 manifest items
-        let mut search_pos = 0;
-        while let Some(item_start) = content[search_pos..].find("<item ") {
-            let item_start = search_pos + item_start;
-            let item_end = content[item_start..].find("/>")
-                .map(|end| item_start + end + 2)
-                .unwrap_or(content.len());
-
-            let item_content = &content[item_start..item_end];
-
-            let id = Self::extract_attribute(item_content, "id")
-                .unwrap_or_default();
-            let href = Self::extract_attribute(item_content, "href")
-                .unwrap_or_default();
-            let media_type = Self::extract_attribute(item_content, "media-type")
-                .unwrap_or_default();
-
-            if !id.is_empty() && !href.is_empty() {
-                items.push(crate::epub::models::StandardManifestItem {
-                    id,
-                    href,
-                    media_type,
-                    properties: None,
-                });
-            }
-
-            search_pos = item_end;
-        }
-
-        Ok(StandardManifest { items })
+        opf_document::load_opf_document(base_path, "unknown").map(|document| document.manifest)
     }
 
     /// 展平目录结构 - 直接返回新的 Vec 而非引用
@@ -703,9 +655,10 @@ pub fn update_toc_entry(
     let updated = update_toc_entry_recursive(&mut toc, entry_id, new_label, new_content_src);
 
     if !updated {
-        return Err(RefactorError::InvalidStructure(
-            format!("TOC entry not found: {}", entry_id),
-        ));
+        return Err(RefactorError::InvalidStructure(format!(
+            "TOC entry not found: {}",
+            entry_id
+        )));
     }
 
     // 同步更改
@@ -738,12 +691,7 @@ fn update_toc_entry_recursive(
 }
 
 /// 辅助函数：更新目录顺序
-pub fn update_toc_order(
-    epub_id: &str,
-    new_order: &[TocOrderDto],
-) -> Result<(), RefactorError> {
-    let storage_path = crate::epub::storage::get_epub_storage_path(epub_id);
-
+pub fn update_toc_order(epub_id: &str, new_order: &[TocOrderDto]) -> Result<(), RefactorError> {
     // 将前端传输的顺序转换为 TocChapterDto
     let mut order_counter = 0usize;
     let toc: Vec<TocChapterDto> = convert_order_to_toc(new_order, 0, &mut order_counter);

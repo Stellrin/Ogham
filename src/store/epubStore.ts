@@ -2,14 +2,6 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-export interface Chapter {
-  id: string;
-  path: string;
-  name: string;
-  order: number;
-  content?: ChapterContent;
-}
-
 export interface ChapterContent {
   html: string;
   resources: Record<string, ResourceData>;
@@ -27,22 +19,10 @@ export interface EpubMetadata {
   identifier: string;
 }
 
-export interface EpubStructure {
-  oebpsPath: string;
-  contentOpf: string;
-  tocNcx?: string;
-  navXhtml?: string;
-  chapters: Chapter[];
-  styles: string[];
-  images: string[];
-  metadata?: EpubMetadata;
-}
-
 export interface EpubFile {
   id: string;
   name: string;
   path: string;
-  structure?: EpubStructure;
   structureError?: string;
   loadedAt: number;
   refactoredStructure?: RefactoredEpubStructure;
@@ -61,20 +41,27 @@ export interface ReaderState {
   pendingAnchor: string | null;
 }
 
-// 导出 CombinedChapter 类型供组件使用
-export type CombinedChapter = Chapter | StandardChapter;
+export type AppNotificationKind = 'success' | 'error' | 'warning' | 'info';
 
-// 后端返回的数据结构（snake_case）
-interface BackendEpubStructure {
-  oebps_path: string;
-  content_opf: string;
-  toc_ncx?: string;
-  nav_xhtml?: string;
-  chapters: Chapter[];
-  styles: string[];
-  images: string[];
-  metadata?: EpubMetadata;
+export interface AppNotification {
+  id: string;
+  kind: AppNotificationKind;
+  title: string;
+  message?: string;
+  details?: string;
+  createdAt: number;
 }
+
+export interface AppNotificationInput {
+  kind: AppNotificationKind;
+  title: string;
+  message?: string;
+  details?: string;
+  timeoutMs?: number;
+}
+
+// 导出章节类型供组件使用；导入后 UI 只面向标准化章节
+export type CombinedChapter = StandardChapter;
 
 // 重构系统相关接口
 export interface RefactoredEpubStructure {
@@ -119,6 +106,42 @@ export interface TocChapter {
   order: number;
   children: TocChapter[];
   isExpanded?: boolean;
+}
+
+interface BackendTocChapter {
+  id: string;
+  label: string;
+  content_src?: string;
+  contentSrc?: string;
+  file_path?: string;
+  filePath?: string;
+  level: number;
+  order: number;
+  children: BackendTocChapter[];
+}
+
+interface BackendTocOrder {
+  id: string;
+  label: string;
+  content_src: string;
+  children: BackendTocOrder[];
+}
+
+interface ConversionProgressEvent {
+  task_id: string;
+  file_path?: string | null;
+  processed_files: number;
+  total_files: number;
+  files_converted: number;
+  progress: number;
+  stage: string;
+  message: string;
+}
+
+interface ConversionResult {
+  task_id: string;
+  files_converted: number;
+  total_files: number;
 }
 
 // 视图模式
@@ -192,16 +215,21 @@ interface EpubStore {
   imageProcessingTaskId: string | null;
   imageProcessingFailures: ImageProcessFailure[];
 
+  // 应用内通知
+  notifications: AppNotification[];
+  addNotification: (notification: AppNotificationInput) => string;
+  dismissNotification: (id: string) => void;
+  clearNotifications: () => void;
+
   addEpub: (file: EpubFile) => void;
   removeEpub: (id: string) => void;
-  selectEpub: (id: string) => void;
-  updateEpubStructure: (id: string, structure: EpubStructure) => void;
+  selectEpub: (id: string) => Promise<void>;
   setStructureError: (id: string, error: string) => void;
   updateRefactoredStructure: (id: string, refactoredStructure: RefactoredEpubStructure) => void;
   clearRefactoredStructure: (id: string) => void;
 
   // 目录管理方法
-  setViewMode: (mode: ViewMode) => void;
+  setViewMode: (mode: ViewMode) => Promise<void>;
   loadTocEntries: (epubId: string) => Promise<void>;
   updateTocEntryLabel: (entryId: string, newLabel: string) => Promise<void>;
   updateTocEntryFile: (entryId: string, newContentSrc: string) => Promise<void>;
@@ -216,8 +244,6 @@ interface EpubStore {
   // 图片链接处理方法
   processAllImages: () => Promise<void>;
 
-  loadEpubStructure: (id: string) => Promise<void>;
-  loadChapterContent: (chapterPath: string) => Promise<void>;
   loadImageContent: (imagePath: string) => Promise<void>;
   /** 重构 EPUB（解析原始文件，会生成新的 epub_id） */
   refactorEpub: (id: string) => Promise<void>;
@@ -241,6 +267,41 @@ const defaultReaderState: ReaderState = {
   pendingAnchor: null,
 };
 
+const NOTIFICATION_LIMIT = 6;
+
+function createNotificationId(): string {
+  return `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createTaskId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeTocChapter(entry: BackendTocChapter): TocChapter {
+  return {
+    id: entry.id,
+    label: entry.label,
+    contentSrc: entry.contentSrc || entry.content_src || '',
+    filePath: entry.filePath || entry.file_path,
+    level: entry.level,
+    order: entry.order,
+    children: (entry.children || []).map(normalizeTocChapter),
+  };
+}
+
+function toBackendTocOrder(entries: TocChapter[]): BackendTocOrder[] {
+  return entries.map((entry) => ({
+    id: entry.id,
+    label: entry.label,
+    content_src: entry.contentSrc,
+    children: toBackendTocOrder(entry.children),
+  }));
+}
+
 export const useEpubStore = create<EpubStore>((set, get) => ({
   epubs: [],
   selectedEpubId: null,
@@ -261,6 +322,39 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
   imageProcessingProcessedUnique: 0,
   imageProcessingTaskId: null,
   imageProcessingFailures: [],
+  notifications: [],
+
+  addNotification: (notification) => {
+    const id = createNotificationId();
+    const item: AppNotification = {
+      id,
+      kind: notification.kind,
+      title: notification.title,
+      message: notification.message,
+      details: notification.details,
+      createdAt: Date.now(),
+    };
+
+    set((state) => ({
+      notifications: [item, ...state.notifications].slice(0, NOTIFICATION_LIMIT),
+    }));
+
+    const timeoutMs = notification.timeoutMs ?? (notification.kind === 'error' ? 0 : 4800);
+    if (timeoutMs > 0) {
+      globalThis.setTimeout(() => {
+        get().dismissNotification(id);
+      }, timeoutMs);
+    }
+
+    return id;
+  },
+
+  dismissNotification: (id) =>
+    set((state) => ({
+      notifications: state.notifications.filter((notification) => notification.id !== id),
+    })),
+
+  clearNotifications: () => set({ notifications: [] }),
 
   addEpub: (file) =>
     set((state) => {
@@ -288,20 +382,16 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       expandedTocIds: new Set<string>(),
     }));
 
-    // 选择 EPUB 后自动重构
+    // 选择 EPUB 后确保只使用标准化后的管理目录
     if (epub && !epub.refactoredStructure) {
       await get().refactorEpub(id);
-    } else if (epub?.epubId) {
-      await get().loadTocEntries(epub.epubId);
+    } else {
+      const managedEpubId = epub?.refactoredStructure?.epubId || epub?.epubId;
+      if (managedEpubId) {
+        await get().loadTocEntries(managedEpubId);
+      }
     }
   },
-
-  updateEpubStructure: (id, structure) =>
-    set((state) => ({
-      epubs: state.epubs.map((epub) =>
-        epub.id === id ? { ...epub, structure, structureError: undefined } : epub
-      ),
-    })),
 
   setStructureError: (id, error) =>
     set((state) => ({
@@ -342,100 +432,26 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       };
     }),
 
-  loadEpubStructure: async (id: string) => {
-    const state = get();
-    const epub = state.epubs.find((e) => e.id === id);
-    if (!epub) return;
-
-    // 清除之前的错误和结构
-    get().setStructureError(id, '');
-
-    try {
-      const backendStructure = await invoke<BackendEpubStructure>('parse_epub_structure_command', {
-        epubPath: epub.path,
-      });
-
-      // 转换后端返回的数据结构为前端格式
-      const normalizedStructure: EpubStructure = {
-        oebpsPath: backendStructure.oebps_path,
-        contentOpf: backendStructure.content_opf,
-        tocNcx: backendStructure.toc_ncx,
-        navXhtml: backendStructure.nav_xhtml,
-        chapters: backendStructure.chapters,
-        styles: backendStructure.styles,
-        images: backendStructure.images,
-        metadata: backendStructure.metadata,
-      };
-
-      get().updateEpubStructure(id, normalizedStructure);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      get().setStructureError(id, errorMessage);
-    }
-  },
-
-  loadChapterContent: async (chapterPath: string) => {
-    const state = get();
-    const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
-    if (!epub) return;
-
-    try {
-      const content = await invoke<ChapterContent>('get_chapter_content_command', {
-        epubPath: epub.path,
-        chapterPath,
-      });
-
-      set((state) => ({
-        epubs: state.epubs.map((e) => {
-          if (e.id === epub.id) {
-            return {
-              ...e,
-              structure: e.structure
-                ? {
-                    ...e.structure,
-                    chapters: e.structure.chapters.map((ch) =>
-                      ch.path === chapterPath ? { ...ch, content } : ch
-                    ),
-                  }
-                : undefined,
-            };
-          }
-          return e;
-        }),
-      }));
-    } catch (error) {
-      console.error('Failed to load chapter content:', error);
-    }
-  },
-
   loadImageContent: async (imagePath: string) => {
     const state = get();
     const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
-    if (!epub) return;
+    if (!epub?.refactoredStructure?.epubId) return;
 
     try {
-      // Determine whether to use refactored or original structure
-      if (epub.refactoredStructure?.epubId) {
-        const imageData = await invoke<string>('get_image_from_refactored_command', {
-          epubId: epub.refactoredStructure.epubId,
-          imagePath,
-        });
-        get().setReaderState({
-          viewingImagePath: imagePath,
-          viewingImageData: imageData,
-        });
-      } else {
-        const imageData = await invoke<string>('get_image_content_command', {
-          epubPath: epub.path,
-          imagePath,
-        });
-        get().setReaderState({
-          viewingImagePath: imagePath,
-          viewingImageData: imageData,
-        });
-      }
+      const imageData = await invoke<string>('get_image_from_refactored_command', {
+        epubId: epub.refactoredStructure.epubId,
+        imagePath,
+      });
+      get().setReaderState({
+        viewingImagePath: imagePath,
+        viewingImageData: imageData,
+      });
     } catch (error) {
-      console.error('Failed to load image content:', error);
+      get().addNotification({
+        kind: 'error',
+        title: '图片加载失败',
+        message: getErrorMessage(error),
+      });
     }
   },
 
@@ -448,16 +464,13 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     const state = get();
     const epub = state.epubs.find((e) => e.id === state.selectedEpubId);
 
-    // 优先使用重构后的结构，回退到原始结构
-    const chapters = epub?.refactoredStructure?.structure.chapters || epub?.structure?.chapters;
+    const chapters = epub?.refactoredStructure?.structure.chapters;
     if (!chapters || chapters.length === 0) return;
 
     const currentPath = state.readerState.currentChapterPath;
 
     // 通过当前路径查找序号，避免 index 与 TOC order 不一致
-    const foundIndex = chapters.findIndex((c) =>
-      'standard_path' in c ? c.standard_path === currentPath : (c as Chapter).path === currentPath
-    );
+    const foundIndex = chapters.findIndex((chapter) => chapter.standard_path === currentPath);
     const baseIndex = foundIndex >= 0 ? foundIndex : state.readerState.currentChapterIndex;
 
     let targetIndex: number;
@@ -469,11 +482,9 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
 
     if (targetIndex !== baseIndex) {
       const targetChapter = chapters[targetIndex];
-      const targetPath =
-        'standard_path' in targetChapter ? targetChapter.standard_path : (targetChapter as Chapter).path;
       get().setReaderState({
         currentChapterIndex: targetIndex,
-        currentChapterPath: targetPath,
+        currentChapterPath: targetChapter.standard_path,
         scrollPosition: 0,
       });
     }
@@ -509,11 +520,17 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
 
       get().updateRefactoredStructure(id, refactoredStructure);
 
-      // 加载目录数据
-      await get().loadTocEntries(result.epub_id);
+      // 从管理目录重新读取完整结构，保证前端显示的是落盘后的最新状态
+      await get().reloadEpubStructure(id);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
       get().setStructureError(id, errorMessage);
+      get().addNotification({
+        kind: 'error',
+        title: 'EPUB 标准化失败',
+        message: epub.name,
+        details: errorMessage,
+      });
     }
   },
 
@@ -550,7 +567,12 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       // 重新加载目录数据
       await get().loadTocEntries(result.epub_id);
     } catch (error) {
-      console.error('Failed to reload EPUB structure:', error);
+      get().addNotification({
+        kind: 'error',
+        title: '刷新 EPUB 结构失败',
+        message: epub.name,
+        details: getErrorMessage(error),
+      });
     }
   },
 
@@ -587,7 +609,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         }),
       }));
     } catch (error) {
-      console.error('Failed to load refactored chapter content:', error);
+      throw new Error(getErrorMessage(error));
     }
   },
 
@@ -633,15 +655,35 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     const state = get();
     const epub = state.epubs.find((e) => e.epubId === epubId || e.id === epubId);
     if (!epub?.refactoredStructure) return;
+    const isRequestForSelectedEpub = () => {
+      const latestState = get();
+      const selectedEpub = latestState.epubs.find((e) => e.id === latestState.selectedEpubId);
+      return (
+        selectedEpub?.id === epubId ||
+        selectedEpub?.epubId === epubId ||
+        selectedEpub?.refactoredStructure?.epubId === epubId
+      );
+    };
 
     try {
-      const entries = await invoke<TocChapter[]>('load_toc_entries_command', {
+      const backendEntries = await invoke<BackendTocChapter[]>('load_toc_entries_command', {
         epubId,
       });
-      set({ tocEntries: entries });
+      const entries = backendEntries.map(normalizeTocChapter);
+
+      if (isRequestForSelectedEpub()) {
+        set({ tocEntries: entries });
+      }
     } catch (error) {
-      console.error('Failed to load TOC entries:', error);
-      set({ tocEntries: [] });
+      if (isRequestForSelectedEpub()) {
+        set({ tocEntries: [] });
+        get().addNotification({
+          kind: 'warning',
+          title: '目录加载失败',
+          message: epub.name,
+          details: getErrorMessage(error),
+        });
+      }
     }
   },
 
@@ -674,8 +716,15 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       set((state) => ({
         tocEntries: updateLabel(state.tocEntries),
       }));
+
+      await get().reloadEpubStructure(epub.id);
     } catch (error) {
-      console.error('Failed to update TOC entry label:', error);
+      get().addNotification({
+        kind: 'error',
+        title: '目录标题更新失败',
+        message: epub.name,
+        details: getErrorMessage(error),
+      });
     }
   },
 
@@ -708,8 +757,15 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       set((state) => ({
         tocEntries: updateFile(state.tocEntries),
       }));
+
+      await get().reloadEpubStructure(epub.id);
     } catch (error) {
-      console.error('Failed to update TOC entry file:', error);
+      get().addNotification({
+        kind: 'error',
+        title: '目录文件关联更新失败',
+        message: epub.name,
+        details: getErrorMessage(error),
+      });
     }
   },
 
@@ -721,12 +777,18 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     try {
       await invoke('update_toc_order_command', {
         epubId: epub.refactoredStructure.epubId,
-        newOrder,
+        newOrder: toBackendTocOrder(newOrder),
       });
 
       set({ tocEntries: newOrder });
+      await get().reloadEpubStructure(epub.id);
     } catch (error) {
-      console.error('Failed to reorder TOC entries:', error);
+      get().addNotification({
+        kind: 'error',
+        title: '目录顺序更新失败',
+        message: epub.name,
+        details: getErrorMessage(error),
+      });
     }
   },
 
@@ -773,33 +835,35 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     }
 
     const epubId = epub.refactoredStructure.epubId;
-    let progressInterval: ReturnType<typeof setInterval> | null = null;
+    const taskId = createTaskId('conversion');
+    let unlisten: (() => void) | null = null;
 
     try {
       set({ isConverting: true, conversionProgress: 0 });
 
-      // 模拟进度更新
-      progressInterval = setInterval(() => {
-        set((state) => ({
-          conversionProgress: Math.min(state.conversionProgress + 10, 90),
-        }));
-      }, 100);
+      unlisten = await listen<ConversionProgressEvent>('conversion_progress', (event) => {
+        const payload = event.payload;
+        if (payload.task_id !== taskId) {
+          return;
+        }
 
-      const result = await invoke<{ success: boolean; files_converted: number; error: string | null }>(
+        set({
+          conversionProgress: Math.min(payload.progress || 0, 100),
+        });
+      });
+
+      const result = await invoke<ConversionResult>(
         'convert_simplified_traditional_command',
         {
           epubId,
           mode,
+          taskId,
         }
       );
 
-      if (progressInterval) {
-        clearInterval(progressInterval);
-        progressInterval = null;
-      }
-
-      if (!result.success) {
-        throw new Error(result.error || 'Conversion failed');
+      if (unlisten) {
+        unlisten();
+        unlisten = null;
       }
 
       // 显示进度 100%
@@ -811,26 +875,28 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       // 先清理状态，避免阻塞 UI 更新
       set({ isConverting: false, conversionProgress: 0 });
 
-      // 重新加载目录数据以确保前端显示最新改动（在状态清理后调用）
-      await get().loadTocEntries(epubId);
-
       // 重新加载 EPUB 结构以更新文件视图（直接从缓存读取）
       await get().reloadEpubStructure(epub.id);
 
-      // 使用 setTimeout 确保状态更新后再显示 alert
-      setTimeout(() => {
-        alert(`转换完成！共转换 ${result.files_converted} 个文件`);
-      }, 0);
+      get().addNotification({
+        kind: 'success',
+        title: '简繁转换完成',
+        message: `共转换 ${result.files_converted}/${result.total_files} 个文件`,
+      });
     } catch (error) {
       // 清理状态
-      if (progressInterval) {
-        clearInterval(progressInterval);
+      if (unlisten) {
+        unlisten();
       }
       set({ isConverting: false, conversionProgress: 0 });
 
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('Conversion failed:', errorMessage);
-      alert(`转换失败: ${errorMessage}`);
+      const errorMessage = getErrorMessage(error);
+      get().addNotification({
+        kind: 'error',
+        title: '简繁转换失败',
+        message: epub.name,
+        details: errorMessage,
+      });
       throw error;
     }
   },
@@ -844,6 +910,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     }
 
     const epubId = epub.refactoredStructure.epubId;
+    const taskId = createTaskId('image-process');
     let unlisten: (() => void) | null = null;
 
     try {
@@ -857,7 +924,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         imageProcessingFailed: 0,
         imageProcessingSkipped: 0,
         imageProcessingProcessedUnique: 0,
-        imageProcessingTaskId: null,
+        imageProcessingTaskId: taskId,
         imageProcessingFailures: [],
       });
 
@@ -865,8 +932,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         const payload = event.payload;
 
         set((currentState) => {
-          const existingTaskId = currentState.imageProcessingTaskId;
-          if (existingTaskId && existingTaskId !== payload.task_id) {
+          if (payload.task_id !== taskId) {
             return currentState;
           }
 
@@ -890,6 +956,7 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
 
       const result = await invoke<ImageProcessResult>('process_all_images_command', {
         epubId,
+        taskId,
       });
 
       if (unlisten) {
@@ -911,9 +978,6 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       // 清除章节缓存，确保下次加载获取最新内容
       get().clearChapterCache(epub.id);
 
-      // 重新加载目录数据以确保前端显示最新改动
-      await get().loadTocEntries(epubId);
-
       // 重新加载 EPUB 结构以更新文件视图（包括新增图片，直接从缓存读取）
       await get().reloadEpubStructure(epub.id);
 
@@ -925,23 +989,21 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         imageProcessingCurrentImageUrl: '',
       });
 
-      // 使用 setTimeout 确保状态更新后再显示 alert
-      setTimeout(() => {
-        const summary = `处理完成！章节 ${result.processed_chapters}/${result.total_chapters}，` +
-          `匹配 ${result.detected_raw_matches} 条，去重后 ${result.detected_unique_urls} 张，` +
-          `成功 ${result.successful_images}，失败 ${result.failed_images}，复用 ${result.skipped_duplicates}`;
+      const summary = `章节 ${result.processed_chapters}/${result.total_chapters}，` +
+        `匹配 ${result.detected_raw_matches} 条，去重后 ${result.detected_unique_urls} 张，` +
+        `成功 ${result.successful_images}，失败 ${result.failed_images}，复用 ${result.skipped_duplicates}`;
+      const failureDetails = result.failures
+        .slice(0, 8)
+        .map((failure, index) => `${index + 1}. ${failure.chapter_path} | ${failure.image_url} | ${failure.error}`)
+        .join('\n');
 
-        if (result.failed_images > 0 && result.failures.length > 0) {
-          const details = result.failures
-            .slice(0, 5)
-            .map((failure, index) => `${index + 1}. ${failure.chapter_path} | ${failure.image_url} | ${failure.error}`)
-            .join('\n');
-          alert(`${summary}\n\n失败明细（最多显示5条）:\n${details}`);
-          return;
-        }
-
-        alert(summary);
-      }, 0);
+      get().addNotification({
+        kind: result.failed_images > 0 ? 'warning' : 'success',
+        title: result.failed_images > 0 ? '图片处理完成，但有失败项' : '图片处理完成',
+        message: summary,
+        details: failureDetails || undefined,
+        timeoutMs: result.failed_images > 0 ? 0 : undefined,
+      });
     } catch (error) {
       // 清理状态
       if (unlisten) {
@@ -954,9 +1016,13 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         imageProcessingCurrentImageUrl: '',
       });
 
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('Failed to process all images:', errorMessage);
-      alert(`处理图片失败: ${errorMessage}`);
+      const errorMessage = getErrorMessage(error);
+      get().addNotification({
+        kind: 'error',
+        title: '处理图片失败',
+        message: epub.name,
+        details: errorMessage,
+      });
       throw error;
     }
   },

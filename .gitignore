@@ -26,3 +26,7 @@ dist-ssr
 books
 tips.md
 *.bat
+
+CLAUDE.md
+AGENTS.md
+clean.bat

@@ -2,40 +2,53 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 8px 16px;
-  background-color: #f8f9fa;
-  border-bottom: 1px solid #e9ecef;
-  gap: 12px;
+  min-height: 48px;
+  padding: 8px 18px;
+  background-color: #fbfcfd;
+  border-bottom: 1px solid #e6eaee;
+  gap: 10px;
   flex-shrink: 0;
 }
 
-.toolbar-group {
+.toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
-.dropdown-container {
+.toolbar-menu-container {
   position: relative;
 }
 
 .toolbar-button {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 12px;
   background-color: #fff;
-  border: 1px solid #d9d9d9;
-  border-radius: 4px;
+  border: 1px solid #d7dee5;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
-  color: #333;
-  transition: all 0.2s;
+  font-size: 13px;
+  color: #24313d;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
+}
+
+.toolbar-button-primary {
+  font-weight: 600;
 }
 
 .toolbar-button:hover:not(:disabled) {
-  border-color: #4a90d9;
-  color: #4a90d9;
+  border-color: #6c9dc8;
+  color: #23659d;
+  box-shadow: 0 1px 4px rgba(25, 61, 92, 0.08);
+}
+
+.toolbar-button:focus-visible,
+.toolbar-menu-item:focus-visible {
+  outline: 2px solid rgba(74, 144, 217, 0.25);
+  outline-offset: 2px;
 }
 
 .toolbar-button:disabled {
@@ -44,7 +57,14 @@
 }
 
 .toolbar-icon {
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  line-height: 1;
+  color: #53718b;
 }
 
 .toolbar-label {
@@ -52,81 +72,197 @@
 }
 
 .toolbar-caret {
-  font-size: 8px;
-  color: #999;
+  font-size: 10px;
+  color: #7b8792;
 }
 
-.dropdown-menu {
+.toolbar-menu {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 8px);
   right: 0;
-  margin-top: 4px;
+  width: 224px;
+  padding: 8px;
   background-color: #fff;
-  border: 1px solid #e9ecef;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  border: 1px solid #dde5ec;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(32, 45, 58, 0.13);
   z-index: 100;
-  min-width: 120px;
-  overflow: hidden;
 }
 
-.dropdown-item {
+.toolbar-menu::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: 18px;
+  width: 8px;
+  height: 8px;
+  background-color: #fff;
+  border-left: 1px solid #dde5ec;
+  border-top: 1px solid #dde5ec;
+  transform: rotate(45deg);
+}
+
+.toolbar-menu-section {
+  position: relative;
+  display: grid;
+  gap: 2px;
+}
+
+.toolbar-menu-title {
+  padding: 4px 8px 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #7d8b97;
+}
+
+.toolbar-menu-divider {
+  height: 1px;
+  margin: 7px 4px;
+  background-color: #edf1f4;
+}
+
+.toolbar-menu-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   width: 100%;
-  padding: 6px 10px;
-  background: none;
+  min-height: 42px;
+  padding: 7px 8px;
+  background-color: transparent;
   border: none;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
-  color: #333;
+  font: inherit;
+  color: #263743;
   text-align: left;
-  transition: background-color 0.2s;
+  transition: background-color 0.14s ease, color 0.14s ease;
 }
 
-.dropdown-item:hover:not(:disabled) {
-  background-color: #f0f7ff;
-  color: #4a90d9;
+.toolbar-menu-item:hover:not(:disabled) {
+  background-color: #f3f8fc;
+  color: #1f659b;
 }
 
-.dropdown-item:disabled {
+.toolbar-menu-item:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.dropdown-icon {
-  font-size: 10px;
-  color: #666;
-  width: 14px;
-  text-align: center;
-}
-
-.toolbar-progress {
-  display: flex;
+.toolbar-menu-icon {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border: 1px solid #d8e1e8;
+  border-radius: 6px;
+  background-color: #f8fafb;
+  color: #46687f;
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.progress-bar {
-  width: 80px;
+.toolbar-menu-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.toolbar-menu-label {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.toolbar-status {
+  display: grid;
+  grid-template-columns: minmax(130px, auto) minmax(80px, 140px) minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  max-width: 640px;
+  padding: 6px 10px;
+  border: 1px solid #dbe7ef;
+  border-radius: 999px;
+  background-color: #f7fbfd;
+  color: #425563;
+}
+
+.toolbar-status-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.toolbar-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background-color: #3c8dbc;
+  box-shadow: 0 0 0 4px rgba(60, 141, 188, 0.12);
+}
+
+.toolbar-status-text {
+  min-width: 0;
+  color: #29465a;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-progress-bar {
+  width: 100%;
   height: 4px;
-  background-color: #e9ecef;
+  background-color: #e2e9ef;
   border-radius: 2px;
   overflow: hidden;
 }
 
-.progress-fill {
+.toolbar-progress-fill {
   height: 100%;
-  background-color: #4a90d9;
+  background-color: #3c8dbc;
   transition: width 0.3s ease;
 }
 
-.progress-text {
+.toolbar-status-detail {
+  min-width: 0;
   font-size: 11px;
-  color: #666;
+  color: #697885;
   white-space: nowrap;
-  max-width: 620px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 768px) {
+  .epub-toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+  }
+
+  .toolbar-actions {
+    margin-left: auto;
+  }
+
+  .toolbar-menu {
+    right: -4px;
+  }
+
+  .toolbar-status {
+    order: 2;
+    grid-template-columns: minmax(120px, auto) 1fr;
+    width: 100%;
+    max-width: none;
+    border-radius: 8px;
+  }
+
+  .toolbar-status-detail {
+    grid-column: 1 / -1;
+  }
 }

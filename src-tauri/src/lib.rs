@@ -38,6 +38,7 @@ pub fn run() {
             epub::update_toc_entry_command,
             epub::convert_simplified_traditional_command,
             epub::process_all_images_command,
+            epub::load_resource_index_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

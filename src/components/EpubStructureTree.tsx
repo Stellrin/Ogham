@@ -30,11 +30,9 @@ const convertNavigationToToc = (navigation: NavigationEntry[], chapters: Combine
 // 将章节列表转换为 TocChapter 格式（当没有导航信息时使用）
 const convertChaptersToToc = (chapters: CombinedChapter[]): TocChapter[] => {
   return chapters.map((chapter, index) => {
-    // StandardChapter 有 title 字段，Chapter 有 name 字段
-    const title = 'title' in chapter ? chapter.title : 'name' in chapter ? (chapter as any).name : undefined;
     return {
       id: `chapter-${index}`,
-      label: title || getChapterName(chapter) || `Chapter ${index + 1}`,
+      label: chapter.title || getChapterName(chapter) || `Chapter ${index + 1}`,
       contentSrc: getChapterPath(chapter) || '',
       filePath: getChapterPath(chapter),
       level: 0,
@@ -70,19 +68,12 @@ export const EpubStructureTree: React.FC = () => {
   } = useEpubStore();
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
+  const managedStructure = selectedEpub?.refactoredStructure?.structure;
 
-  // 获取文件列表 - 优先使用重构后的结构
-  const imageList: string[] = selectedEpub?.refactoredStructure?.structure.images ||
-                               selectedEpub?.structure?.images ||
-                               [];
-  const styleList: string[] = selectedEpub?.refactoredStructure?.structure.styles ||
-                                selectedEpub?.structure?.styles ||
-                                [];
+  const imageList: string[] = managedStructure?.images || [];
+  const styleList: string[] = managedStructure?.styles || [];
 
-  // 优先使用重构后的结构，回退到原始结构
-  const allChapters: CombinedChapter[] = selectedEpub?.refactoredStructure?.structure.chapters ||
-                                          selectedEpub?.structure?.chapters ||
-                                          [];
+  const allChapters: CombinedChapter[] = managedStructure?.chapters || [];
 
   // 自动展开 Text 文件夹当有章节被选中时
   useEffect(() => {
@@ -123,7 +114,7 @@ export const EpubStructureTree: React.FC = () => {
     );
   }
 
-  if (!selectedEpub.structure) {
+  if (!managedStructure) {
     return (
       <div className="structure-tree">
         <div className="structure-empty">
@@ -143,8 +134,6 @@ export const EpubStructureTree: React.FC = () => {
       </div>
     );
   }
-
-  const structure = selectedEpub.structure;
 
   // 可折叠的文件夹节点组件
   const FolderNode: React.FC<{
@@ -193,50 +182,16 @@ export const EpubStructureTree: React.FC = () => {
       {/* 根据视图模式显示不同内容 */}
       {viewMode === 'toc' ? (
         <div className="toc-view-container">
-          {selectedEpub?.refactoredStructure?.structure ? (
-            <TocTreeView
-              entries={
-                // 优先使用 tocEntries（由 loadTocEntries 加载的最新数据），否则使用 navigation
-                tocEntries && tocEntries.length > 0
-                  ? tocEntries
-                  : selectedEpub.refactoredStructure.structure.navigation?.length > 0
-                    ? convertNavigationToToc(selectedEpub.refactoredStructure.structure.navigation, allChapters)
-                    : convertChaptersToToc(allChapters)
-              }
-            />
-          ) : selectedEpub?.structure?.chapters ? (
-            // 未重构的 EPUB 显示原始目录信息
-            <div className="toc-view-container">
-              <div className="toc-info-box">
-                <p>当前为原始 EPUB 结构</p>
-                <p className="hint">重构后可使用完整的目录管理功能，包括编辑标签、调整顺序等</p>
-              </div>
-              <div className="original-toc-list">
-                <h4>原始章节列表</h4>
-                {selectedEpub.structure.chapters.map((chapter, index) => (
-                  <div
-                    key={chapter.id}
-                    className={`toc-item ${readerState.currentChapterPath === chapter.path ? 'active' : ''}`}
-                    onClick={() => {
-                      setReaderState({
-                        currentChapterIndex: index,
-                        currentChapterPath: chapter.path,
-                        scrollPosition: 0,
-                      });
-                    }}
-                  >
-                    <span className="toc-label">{chapter.name}</span>
-                    <span className="toc-file-path">{chapter.path}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="structure-empty">
-              <p>请先加载 EPUB 结构</p>
-              <p className="hint">在左侧选择 EPUB 文件后查看目录</p>
-            </div>
-          )}
+          <TocTreeView
+            entries={
+              // 优先使用 tocEntries（由 loadTocEntries 加载的最新数据），否则使用 navigation
+              tocEntries && tocEntries.length > 0
+                ? tocEntries
+                : managedStructure.navigation?.length > 0
+                  ? convertNavigationToToc(managedStructure.navigation, allChapters)
+                  : convertChaptersToToc(allChapters)
+            }
+          />
         </div>
       ) : (
       <div className="structure-content">
@@ -247,23 +202,17 @@ export const EpubStructureTree: React.FC = () => {
             <span className="tree-badge">OPF</span>
           </div>
 
-          {/* toc.ncx */}
-          {structure.tocNcx && (
-            <div className="tree-node tree-leaf">
-              <span className="tree-icon">📄</span>
-              <span className="tree-label file-name">toc.ncx</span>
-              <span className="tree-badge special">NCX</span>
-            </div>
-          )}
+          <div className="tree-node tree-leaf">
+            <span className="tree-icon">📄</span>
+            <span className="tree-label file-name">toc.ncx</span>
+            <span className="tree-badge special">NCX</span>
+          </div>
 
-          {/* nav.xhtml */}
-          {structure.navXhtml && (
-            <div className="tree-node tree-leaf">
-              <span className="tree-icon">📄</span>
-              <span className="tree-label file-name">nav.xhtml</span>
-              <span className="tree-badge special">NAV</span>
-            </div>
-          )}
+          <div className="tree-node tree-leaf">
+            <span className="tree-icon">📄</span>
+            <span className="tree-label file-name">nav.xhtml</span>
+            <span className="tree-badge special">NAV</span>
+          </div>
 
           {/* Text/ */}
           <FolderNode label="Text/" sectionId="text">

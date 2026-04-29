@@ -227,6 +227,63 @@ pub struct FileMap {
     pub standard_to_original: HashMap<String, String>,
 }
 
+/// Ogham 管理目录元数据
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OghamWorkspaceMetadata {
+    pub version: u32,
+    pub epub_id: String,
+    pub source_path: String,
+    pub source_name: String,
+    pub file_map: FileMap,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Ogham 全局资源关系索引
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResourceIndex {
+    pub version: u32,
+    pub epub_id: String,
+    pub generated_at: u64,
+    pub resources: Vec<ResourceIndexItem>,
+    pub references: Vec<ResourceReference>,
+    pub unresolved_references: Vec<ResourceReference>,
+}
+
+/// 资源索引项
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResourceIndexItem {
+    pub path: String,
+    pub href: String,
+    pub manifest_id: Option<String>,
+    pub media_type: String,
+    pub resource_type: ResourceIndexType,
+    pub properties: Option<Vec<String>>,
+    pub referenced_by: Vec<String>,
+}
+
+/// 资源类型
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceIndexType {
+    Chapter,
+    Style,
+    Image,
+    Font,
+    Nav,
+    Ncx,
+    Misc,
+}
+
+/// 文件内引用关系
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResourceReference {
+    pub source_path: String,
+    pub target_path: Option<String>,
+    pub raw_reference: String,
+    pub attribute: String,
+    pub is_resolved: bool,
+}
+
 /// 特殊文件
 #[derive(Debug, Clone)]
 pub struct SpecialFiles {
@@ -245,7 +302,7 @@ pub struct EpubStructureAnalysis {
 }
 
 /// 重构结果（返回给前端）
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RefactoredEpubResult {
     pub epub_id: String,
     pub metadata: EpubMetadata,
@@ -254,7 +311,7 @@ pub struct RefactoredEpubResult {
 }
 
 /// 标准化 EPUB 结构（返回给前端）
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StandardEpubStructure {
     pub chapters: Vec<StandardChapter>,
     pub styles: Vec<String>,
@@ -264,7 +321,7 @@ pub struct StandardEpubStructure {
 }
 
 /// 标准化章节
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StandardChapter {
     pub id: String,
     pub original_filename: String,
@@ -274,7 +331,7 @@ pub struct StandardChapter {
 }
 
 /// 导航条目
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NavigationEntry {
     pub id: String,
     pub label: String,

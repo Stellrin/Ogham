@@ -31,7 +31,8 @@ fn build_opf_xml(
     let unique_id = "book-id".to_string();
     let modified_date = get_current_date();
 
-    let xml = format!(r##"<?xml version="1.0" encoding="UTF-8"?>
+    let xml = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="{}" xml:lang="{}">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="{}">{}</dc:identifier>
@@ -71,7 +72,8 @@ fn build_opf_xml(
 
 /// 构建 manifest 项目
 fn build_manifest_items(manifest: &StandardManifest) -> String {
-    manifest.items
+    manifest
+        .items
         .iter()
         .map(|item| {
             let properties_attr = if let Some(ref props) = item.properties {
@@ -98,10 +100,12 @@ fn build_manifest_items(manifest: &StandardManifest) -> String {
 
 /// 构建 spine 项目
 fn build_spine_items(spine: &StandardSpine) -> String {
-    spine.itemrefs
+    spine
+        .itemrefs
         .iter()
         .map(|itemref| {
-            let linear_attr = itemref.linear
+            let linear_attr = itemref
+                .linear
                 .map(|l| format!(" linear=\"{}\"", if l { "yes" } else { "no" }))
                 .unwrap_or_default();
 
@@ -119,9 +123,7 @@ fn build_spine_items(spine: &StandardSpine) -> String {
 fn get_current_date() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
     let secs = duration.as_secs();
     let datetime = chrono_timestamp_to_datetime(secs);
@@ -197,14 +199,12 @@ mod tests {
     #[test]
     fn test_build_manifest_items() {
         let manifest = StandardManifest {
-            items: vec![
-                StandardManifestItem {
-                    id: "chapter1".to_string(),
-                    href: "Text/chapter1.xhtml".to_string(),
-                    media_type: "application/xhtml+xml".to_string(),
-                    properties: None,
-                },
-            ],
+            items: vec![StandardManifestItem {
+                id: "chapter1".to_string(),
+                href: "Text/chapter1.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: None,
+            }],
         };
 
         let result = build_manifest_items(&manifest);

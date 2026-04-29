@@ -4,10 +4,7 @@ use std::io::Write;
 use std::path::Path;
 
 /// 生成 toc.ncx 文件（EPUB 2.0 兼容）
-pub fn generate_toc_ncx(
-    navigation: &Navigation,
-    base_path: &str,
-) -> Result<(), RefactorError> {
+pub fn generate_toc_ncx(navigation: &Navigation, base_path: &str) -> Result<(), RefactorError> {
     let ncx_content = render_toc_ncx(navigation)?;
 
     let ncx_path = Path::new(base_path).join("OEBPS/toc.ncx");
@@ -21,10 +18,7 @@ pub fn generate_toc_ncx(
 }
 
 /// 生成 nav.xhtml 文件（EPUB 3.0 导航）
-pub fn generate_nav_xhtml(
-    navigation: &Navigation,
-    base_path: &str,
-) -> Result<(), RefactorError> {
+pub fn generate_nav_xhtml(navigation: &Navigation, base_path: &str) -> Result<(), RefactorError> {
     let nav_content = render_nav_xhtml(navigation)?;
 
     let nav_path = Path::new(base_path).join("OEBPS/nav.xhtml");
@@ -51,7 +45,8 @@ pub fn render_nav_xhtml(navigation: &Navigation) -> Result<String, RefactorError
 fn build_ncx_xml(navigation: &Navigation) -> Result<String, RefactorError> {
     let max_depth = calculate_max_depth(&navigation.toc);
 
-    let xml = format!(r####"<?xml version="1.0" encoding="UTF-8"?>
+    let xml = format!(
+        r####"<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
     <meta name="dtb:uid" content="ogham-book-id"/>
@@ -111,7 +106,8 @@ fn build_ncx_nav_points(entries: &[TocEntry], start_id: usize, level: usize) -> 
 
 /// 构建 nav.xhtml 内容
 fn build_nav_xhtml(navigation: &Navigation) -> Result<String, RefactorError> {
-    let xml = format!(r####"<?xml version="1.0" encoding="UTF-8"?>
+    let xml = format!(
+        r####"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
   <head>
@@ -163,7 +159,8 @@ fn build_nav_xhtml_items(entries: &[TocEntry]) -> String {
             let children_html = if entry.children.is_empty() {
                 String::new()
             } else {
-                format!("\n        <ol class=\"toc\">\n          {}\n        </ol>",
+                format!(
+                    "\n        <ol class=\"toc\">\n          {}\n        </ol>",
                     build_nav_xhtml_items(&entry.children)
                 )
             };
@@ -213,7 +210,10 @@ mod tests {
 
     #[test]
     fn test_escape_xml() {
-        assert_eq!(escape_xml("Chapter 1: The Beginning"), "Chapter 1: The Beginning");
+        assert_eq!(
+            escape_xml("Chapter 1: The Beginning"),
+            "Chapter 1: The Beginning"
+        );
         assert_eq!(escape_xml("A & B"), "A &amp; B");
         assert_eq!(escape_xml("<tag>"), "&lt;tag&gt;");
     }
@@ -226,15 +226,13 @@ mod tests {
                 label: "Chapter 1".to_string(),
                 content_src: "ch1.xhtml".to_string(),
                 level: 0,
-                children: vec![
-                    TocEntry {
-                        id: "1-1".to_string(),
-                        label: "Section 1.1".to_string(),
-                        content_src: "ch1-1.xhtml".to_string(),
-                        level: 1,
-                        children: vec![],
-                    }
-                ],
+                children: vec![TocEntry {
+                    id: "1-1".to_string(),
+                    label: "Section 1.1".to_string(),
+                    content_src: "ch1-1.xhtml".to_string(),
+                    level: 1,
+                    children: vec![],
+                }],
             },
             TocEntry {
                 id: "2".to_string(),
@@ -250,15 +248,13 @@ mod tests {
 
     #[test]
     fn test_build_nav_xhtml_items() {
-        let entries = vec![
-            TocEntry {
-                id: "1".to_string(),
-                label: "Chapter 1".to_string(),
-                content_src: "Text/chapter1.xhtml".to_string(),
-                level: 0,
-                children: vec![],
-            },
-        ];
+        let entries = vec![TocEntry {
+            id: "1".to_string(),
+            label: "Chapter 1".to_string(),
+            content_src: "Text/chapter1.xhtml".to_string(),
+            level: 0,
+            children: vec![],
+        }];
 
         let result = build_nav_xhtml_items(&entries);
         assert!(result.contains("Chapter 1"));
@@ -270,15 +266,13 @@ mod tests {
     #[test]
     fn test_build_ncx_xml() {
         let navigation = Navigation {
-            toc: vec![
-                TocEntry {
-                    id: "1".to_string(),
-                    label: "Chapter 1".to_string(),
-                    content_src: "Text/chapter1.xhtml".to_string(),
-                    level: 0,
-                    children: vec![],
-                },
-            ],
+            toc: vec![TocEntry {
+                id: "1".to_string(),
+                label: "Chapter 1".to_string(),
+                content_src: "Text/chapter1.xhtml".to_string(),
+                level: 0,
+                children: vec![],
+            }],
         };
 
         let result = build_ncx_xml(&navigation).unwrap();

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Ogham EPUB Manager Icon</title>
+  <desc id="desc">A simple flat icon of an open EPUB book.</desc>
+
+  <rect width="512" height="512" rx="108" fill="#F4F0E7"/>
+  <rect x="78" y="86" width="356" height="340" rx="56" fill="#2F6F73"/>
+
+  <path
+    d="M256 151c-31-28-73-42-126-42-19 0-34 15-34 34v212c0 19 15 34 34 34 53 0 95 14 126 42V151Z"
+    fill="#FFFDF7"
+  />
+  <path
+    d="M256 151c31-28 73-42 126-42 19 0 34 15 34 34v212c0 19-15 34-34 34-53 0-95 14-126 42V151Z"
+    fill="#EDE5D8"
+  />
+
+  <path d="M256 151v280" stroke="#D1C7B8" stroke-width="14" stroke-linecap="round"/>
+
+  <path d="M137 174c35 2 64 10 87 25" stroke="#89AAA7" stroke-width="15" stroke-linecap="round"/>
+  <path d="M137 223c35 2 64 10 87 25" stroke="#89AAA7" stroke-width="15" stroke-linecap="round"/>
+  <path d="M137 272c30 2 56 9 78 21" stroke="#89AAA7" stroke-width="15" stroke-linecap="round"/>
+
+  <path d="M290 174c24-11 53-17 87-18" stroke="#B7A88F" stroke-width="15" stroke-linecap="round"/>
+  <path d="M290 223c24-11 53-17 87-18" stroke="#B7A88F" stroke-width="15" stroke-linecap="round"/>
+  <path d="M290 272c23-10 50-16 81-17" stroke="#B7A88F" stroke-width="15" stroke-linecap="round"/>
+
+</svg>

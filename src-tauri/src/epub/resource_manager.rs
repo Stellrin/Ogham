@@ -1,10 +1,11 @@
+use super::epub_path;
 use super::models::*;
+use base64::Engine;
+use regex::Regex;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use zip::ZipArchive;
-use regex::Regex;
-use base64::Engine;
 
 /// 从原始 EPUB 复制和整理文件到标准目录
 pub fn copy_and_organize_files(
@@ -20,27 +21,59 @@ pub fn copy_and_organize_files(
 
     // 复制章节文件
     for chapter in &analysis.chapters {
-        extract_and_copy_file(&mut archive, &chapter.original_path, storage_path, &chapter.standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            &chapter.original_path,
+            storage_path,
+            &chapter.standard_path,
+        )?;
     }
 
     // 复制样式文件
     for style in &analysis.resources.styles {
-        extract_and_copy_file(&mut archive, &style.original_path, storage_path, &style.standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            &style.original_path,
+            storage_path,
+            &style.standard_path,
+        )?;
     }
 
     // 复制图片文件
     for image in &analysis.resources.images {
-        extract_and_copy_file(&mut archive, &image.original_path, storage_path, &image.standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            &image.original_path,
+            storage_path,
+            &image.standard_path,
+        )?;
     }
 
     // 复制字体文件
     for font in &analysis.resources.fonts {
-        extract_and_copy_file(&mut archive, &font.original_path, storage_path, &font.standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            &font.original_path,
+            storage_path,
+            &font.standard_path,
+        )?;
     }
 
     // 复制其他文件
     for misc in &analysis.resources.misc {
-        extract_and_copy_file(&mut archive, &misc.original_path, storage_path, &misc.standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            &misc.original_path,
+            storage_path,
+            &misc.standard_path,
+        )?;
+    }
+
+    // 复制封面页。若封面页已经作为 spine 章节复制，这里覆盖到同一路径，不改变内容。
+    if let Some(ref cover_path) = analysis.special_files.cover {
+        if let Some(standard_path) = analysis.file_map.original_to_standard.get(cover_path) {
+            extract_and_copy_file(&mut archive, cover_path, storage_path, standard_path)?;
+        }
     }
 
     // 复制 nav.xhtml (EPUB 3.0 导航文件)
@@ -76,7 +109,8 @@ fn extract_and_copy_file(
 
     // 读取文件内容
     let mut buffer = Vec::new();
-    source_file.read_to_end(&mut buffer)
+    source_file
+        .read_to_end(&mut buffer)
         .map_err(|e| RefactorError::IoError(format!("无法读取文件 {}: {}", original_path, e)))?;
 
     // 创建目标路径
@@ -92,7 +126,8 @@ fn extract_and_copy_file(
     let mut target_file = File::create(&target_path)
         .map_err(|e| RefactorError::IoError(format!("无法创建文件 {:?}: {}", target_path, e)))?;
 
-    target_file.write_all(&buffer)
+    target_file
+        .write_all(&buffer)
         .map_err(|e| RefactorError::IoError(format!("无法写入文件 {:?}: {}", target_path, e)))?;
 
     Ok(())
@@ -123,6 +158,26 @@ pub fn update_resource_references(
         )?;
     }
 
+    if let Some(ref cover_path) = analysis.special_files.cover {
+        let cover_already_updated = analysis
+            .chapters
+            .iter()
+            .any(|chapter| chapter.original_path == *cover_path);
+
+        if !cover_already_updated {
+            if let Some(standard_path) = analysis.file_map.original_to_standard.get(cover_path) {
+                if epub_path::is_text_like_file(standard_path) {
+                    update_file_references(
+                        storage_path,
+                        cover_path,
+                        standard_path,
+                        &analysis.file_map,
+                    )?;
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -140,18 +195,10 @@ fn update_file_references(
         .map_err(|e| RefactorError::IoError(format!("无法读取文件 {:?}: {}", full_path, e)))?;
 
     // 获取原始文件所在目录（用于解析引用）
-    let original_dir = if let Some(parent) = Path::new(original_path).parent() {
-        parent.to_string_lossy().to_string()
-    } else {
-        String::new()
-    };
+    let original_dir = epub_path::parent(original_path);
 
     // 获取重构后文件所在目录（用于计算新相对路径）
-    let standard_dir = if let Some(parent) = Path::new(standard_path).parent() {
-        parent.to_string_lossy().to_string()
-    } else {
-        String::new()
-    };
+    let standard_dir = epub_path::parent(standard_path);
 
     // 重写资源路径
     content = rewrite_resource_paths(&content, &original_dir, &standard_dir, file_map);
@@ -178,132 +225,112 @@ fn rewrite_resource_paths(
         let attr_name = &caps[1];
         let original_ref = &caps[2];
 
-        // 跳过已经是 data: URI 的
-        if original_ref.starts_with("data:") {
-            return format!(r#"{}="{}""#, attr_name, original_ref);
-        }
-
-        // 跳过外部链接和锚点
-        if original_ref.starts_with("http://")
-            || original_ref.starts_with("https://")
-            || original_ref.starts_with('#')
+        if let Some(rewritten_ref) =
+            rewrite_single_reference(original_ref, original_dir, standard_dir, file_map)
         {
-            return format!(r#"{}="{}""#, attr_name, original_ref);
-        }
-
-        // 使用原始目录解析相对引用，得到原始完整路径
-        let original_full_path = resolve_relative_path(original_dir, original_ref);
-
-        // 在 file_map 中查找对应的标准路径
-        let standard_target_path = find_standard_path(&original_full_path, file_map);
-
-        if let Some(target_path) = standard_target_path {
-            // 计算从重构后目录到目标标准路径的相对路径
-            let relative_path = calculate_relative_path(standard_dir, &target_path);
-            format!(r#"{}="{}""#, attr_name, relative_path)
+            format!(r#"{}="{}""#, attr_name, rewritten_ref)
         } else {
-            // 没有找到映射，保持原样
             format!(r#"{}="{}""#, attr_name, original_ref)
         }
     });
 
-    result.to_string()
+    rewrite_css_url_paths(&result, original_dir, standard_dir, file_map)
+}
+
+fn rewrite_css_url_paths(
+    content: &str,
+    original_dir: &str,
+    standard_dir: &str,
+    file_map: &FileMap,
+) -> String {
+    let url_regex = Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
+        .unwrap_or_else(|_| Regex::new(r#"url\([^)]+\)"#).unwrap());
+
+    url_regex
+        .replace_all(content, |caps: &regex::Captures| {
+            let open_quote = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let original_ref = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let close_quote = caps.get(3).map(|m| m.as_str()).unwrap_or(open_quote);
+            let quote = if !open_quote.is_empty() {
+                open_quote
+            } else {
+                close_quote
+            };
+
+            if let Some(rewritten_ref) =
+                rewrite_single_reference(original_ref, original_dir, standard_dir, file_map)
+            {
+                format!("url({}{}{})", quote, rewritten_ref, quote)
+            } else {
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+            }
+        })
+        .to_string()
+}
+
+fn rewrite_single_reference(
+    original_ref: &str,
+    original_dir: &str,
+    standard_dir: &str,
+    file_map: &FileMap,
+) -> Option<String> {
+    let trimmed_ref = original_ref.trim();
+    if epub_path::should_skip_reference(trimmed_ref) {
+        return None;
+    }
+
+    let (path_without_suffix, suffix) = epub_path::split_reference_suffix(trimmed_ref);
+    if path_without_suffix.is_empty() {
+        return None;
+    }
+
+    // 使用原始目录解析相对引用，得到原始完整路径
+    let original_full_path = epub_path::resolve_relative(original_dir, path_without_suffix);
+
+    // 在 file_map 中查找对应的标准路径；如果原始文档使用了根相对路径，也直接尝试原引用。
+    let standard_target_path = find_standard_path(&original_full_path, file_map)
+        .or_else(|| find_standard_path(path_without_suffix, file_map))?;
+
+    // 计算从重构后目录到目标标准路径的相对路径，并保留锚点/查询串。
+    let relative_path = epub_path::relative_path(standard_dir, &standard_target_path);
+    Some(format!("{}{}", relative_path, suffix))
 }
 
 /// 查找标准路径（尝试多种路径格式）
 fn find_standard_path(path: &str, file_map: &FileMap) -> Option<String> {
+    let normalized_path = epub_path::normalize(path);
+
     // 首先直接查找
     if let Some(std_path) = file_map.original_to_standard.get(path) {
         return Some(std_path.clone());
     }
+    if let Some(std_path) = file_map.original_to_standard.get(&normalized_path) {
+        return Some(std_path.clone());
+    }
 
     // 尝试去掉 OEBPS/ 前缀
-    if let Some(rest) = path.strip_prefix("OEBPS/") {
+    if let Some(rest) = normalized_path.strip_prefix("OEBPS/") {
         if let Some(std_path) = file_map.original_to_standard.get(rest) {
             return Some(std_path.clone());
         }
     }
 
     // 尝试添加 OEBPS/ 前缀
-    let with_prefix = format!("OEBPS/{}", path);
+    let with_prefix = format!("OEBPS/{}", normalized_path.trim_start_matches('/'));
     if let Some(std_path) = file_map.original_to_standard.get(&with_prefix) {
         return Some(std_path.clone());
     }
 
     // 如果路径本身就是标准路径，直接返回
-    if path.starts_with("OEBPS/") {
-        return Some(path.to_string());
+    if normalized_path.starts_with("OEBPS/") {
+        return Some(normalized_path);
     }
 
     None
 }
 
-/// 解析相对路径
-fn resolve_relative_path(base: &str, relative: &str) -> String {
-    let mut base_parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
-    let path_parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
-
-    for part in &path_parts {
-        if *part == ".." {
-            base_parts.pop();
-        } else if !part.starts_with('.') {
-            base_parts.push(part);
-        }
-    }
-
-    if base_parts.is_empty() {
-        path_parts.join("/")
-    } else {
-        base_parts.join("/")
-    }
-}
-
-/// 计算相对路径（从源目录到目标文件）
-fn calculate_relative_path(from_dir: &str, to_path: &str) -> String {
-    // 解析源目录和目标路径
-    let from_parts: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
-    let to_parts: Vec<&str> = to_path.split('/').filter(|s| !s.is_empty()).collect();
-
-    // 找到公共前缀
-    let mut common_len = 0;
-    for (i, (f, t)) in from_parts.iter().zip(to_parts.iter()).enumerate() {
-        if f == t {
-            common_len = i + 1;
-        } else {
-            break;
-        }
-    }
-
-    // 计算需要向上多少级
-    let up_levels = from_parts.len() - common_len;
-
-    // 构建相对路径
-    let mut result = Vec::new();
-
-    // 添加向上路径
-    for _ in 0..up_levels {
-        result.push("..");
-    }
-
-    // 添加向下路径
-    for part in &to_parts[common_len..] {
-        result.push(*part);
-    }
-
-    // 特殊情况：同一目录
-    if result.is_empty() {
-        // 返回文件名
-        return to_parts.last().unwrap_or(&"").to_string();
-    }
-
-    result.join("/")
-}
-
 /// 从重构后的 EPUB 中读取文件内容
-pub fn read_refactored_file(
-    storage_path: &str,
-    file_path: &str,
-) -> Result<String, RefactorError> {
+pub fn read_refactored_file(storage_path: &str, file_path: &str) -> Result<String, RefactorError> {
     let full_path = Path::new(storage_path).join(file_path);
 
     fs::read_to_string(&full_path)
@@ -339,11 +366,7 @@ fn extract_resources_from_content(
     let mut resources = std::collections::HashMap::new();
 
     // 获取章节所在目录
-    let chapter_dir = if let Some(last_slash) = chapter_path.rfind('/') {
-        &chapter_path[..last_slash]
-    } else {
-        ""
-    };
+    let chapter_dir = epub_path::parent(chapter_path);
 
     // 正则表达式匹配 src=""、href="" 和 xlink:href="" 属性
     let src_regex = Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
@@ -353,15 +376,7 @@ fn extract_resources_from_content(
         let resource_path = &captures[2];
 
         // 跳过已经是 data: URI 的
-        if resource_path.starts_with("data:") {
-            continue;
-        }
-
-        // 跳过外部链接和锚点
-        if resource_path.starts_with("http://")
-            || resource_path.starts_with("https://")
-            || resource_path.starts_with('#')
-        {
+        if epub_path::should_skip_reference(resource_path) {
             continue;
         }
 
@@ -370,15 +385,16 @@ fn extract_resources_from_content(
             continue;
         }
 
-        // 解析路径：区分绝对路径（OEBPS/ 或 Images/ 开头）和相对路径
-        let full_path = if resource_path.starts_with("OEBPS/")
-            || resource_path.starts_with("Images/")
+        let (resource_path_part, _) = epub_path::split_reference_suffix(resource_path);
+        let full_path = if resource_path_part.starts_with("OEBPS/") {
+            epub_path::normalize(resource_path_part)
+        } else if ["Text/", "Styles/", "Images/", "Fonts/", "Misc/"]
+            .iter()
+            .any(|prefix| resource_path_part.starts_with(prefix))
         {
-            // 绝对路径（相对于 EPUB 根目录），直接使用
-            resource_path.to_string()
+            epub_path::manifest_path(resource_path_part)
         } else {
-            // 相对路径，需要基于章节目录解析
-            resolve_path(chapter_dir, resource_path)
+            epub_path::resolve_relative(&chapter_dir, resource_path_part)
         };
 
         // 如果已经提取过这个资源，跳过
@@ -402,7 +418,7 @@ fn extract_single_resource_from_file(
 ) -> Result<ResourceData, RefactorError> {
     let full_path = Path::new(storage_path).join(path);
 
-    let mut buffer = fs::read(&full_path)
+    let buffer = fs::read(&full_path)
         .map_err(|e| RefactorError::IoError(format!("无法读取资源 {:?}: {}", full_path, e)))?;
 
     // 根据 MIME 类型编码
@@ -439,27 +455,6 @@ fn guess_mime_type(path: &str) -> String {
     }
 }
 
-/// 解析相对路径
-fn resolve_path(base: &str, relative: &str) -> String {
-    // 处理 ../ 路径
-    let mut base_parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
-    let path_parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
-
-    for part in &path_parts {
-        if *part == ".." {
-            base_parts.pop();
-        } else if !part.starts_with('.') {
-            base_parts.push(part);
-        }
-    }
-
-    if base_parts.is_empty() {
-        path_parts.join("/")
-    } else {
-        base_parts.join("/")
-    }
-}
-
 /// 重写 HTML 中的资源路径为 data URI
 fn rewrite_resource_urls(
     html: &str,
@@ -470,7 +465,7 @@ fn rewrite_resource_urls(
     for (original_path, resource_data) in resources {
         // 只处理图片类型的资源（image/*, svg+xml）
         let is_image = resource_data.mime_type.starts_with("image/")
-                       || resource_data.mime_type.contains("svg");
+            || resource_data.mime_type.contains("svg");
 
         if !is_image {
             continue; // 跳过非图片资源
@@ -505,12 +500,12 @@ mod tests {
     #[test]
     fn test_resolve_relative_path() {
         assert_eq!(
-            resolve_relative_path("OEBPS/Text", "../Images/cover.jpg"),
+            epub_path::resolve_relative("OEBPS/Text", "../Images/cover.jpg"),
             "OEBPS/Images/cover.jpg"
         );
 
         assert_eq!(
-            resolve_relative_path("OEBPS/Text", "chapter2.xhtml"),
+            epub_path::resolve_relative("OEBPS/Text", "chapter2.xhtml"),
             "OEBPS/Text/chapter2.xhtml"
         );
     }
@@ -518,17 +513,17 @@ mod tests {
     #[test]
     fn test_calculate_relative_path() {
         assert_eq!(
-            calculate_relative_path("OEBPS/Text", "OEBPS/Images/cover.jpg"),
+            epub_path::relative_path("OEBPS/Text", "OEBPS/Images/cover.jpg"),
             "../Images/cover.jpg"
         );
 
         assert_eq!(
-            calculate_relative_path("OEBPS/Text", "OEBPS/Styles/style.css"),
+            epub_path::relative_path("OEBPS/Text", "OEBPS/Styles/style.css"),
             "../Styles/style.css"
         );
 
         assert_eq!(
-            calculate_relative_path("OEBPS", "OEBPS/Text/chapter1.xhtml"),
+            epub_path::relative_path("OEBPS", "OEBPS/Text/chapter1.xhtml"),
             "Text/chapter1.xhtml"
         );
     }
@@ -576,5 +571,41 @@ mod tests {
 
         // 应该更新为 ../Images/cover.png
         assert!(result.contains("xlink:href=\"../Images/cover.png\""));
+    }
+
+    #[test]
+    fn test_rewrite_chapter_href_preserves_anchor() {
+        let mut file_map = FileMap {
+            original_to_standard: HashMap::new(),
+            standard_to_original: HashMap::new(),
+        };
+
+        file_map.original_to_standard.insert(
+            "OEBPS/Text/chapter2.xhtml".to_string(),
+            "OEBPS/Text/chapter2.xhtml".to_string(),
+        );
+
+        let html = r#"<a href="chapter2.xhtml#section-2">Next</a>"#;
+        let result = rewrite_resource_paths(html, "OEBPS/Text", "OEBPS/Text", &file_map);
+
+        assert!(result.contains("href=\"chapter2.xhtml#section-2\""));
+    }
+
+    #[test]
+    fn test_rewrite_css_url_paths() {
+        let mut file_map = FileMap {
+            original_to_standard: HashMap::new(),
+            standard_to_original: HashMap::new(),
+        };
+
+        file_map.original_to_standard.insert(
+            "OEBPS/images/bg.png".to_string(),
+            "OEBPS/Images/bg.png".to_string(),
+        );
+
+        let css = r#".cover { background-image: url("../images/bg.png"); }"#;
+        let result = rewrite_resource_paths(css, "OEBPS/css", "OEBPS/Styles", &file_map);
+
+        assert!(result.contains("url(\"../Images/bg.png\")"));
     }
 }

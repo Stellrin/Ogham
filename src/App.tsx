@@ -1,9 +1,9 @@
-import { useEffect } from 'react';
 import { ImportButton } from './components/ImportButton';
 import { EpubList } from './components/EpubList';
 import { EpubStructureTree } from './components/EpubStructureTree';
 import { EpubReader } from './components/EpubReader';
-import { Toolbar, ConversionMode } from './components/Toolbar';
+import { Toolbar, type ConversionMode } from './components/Toolbar';
+import { NotificationCenter } from './components/NotificationCenter';
 import { useEpubStore } from './store/epubStore';
 import './App.css';
 import './components/ImportButton.css';
@@ -11,11 +11,12 @@ import './components/EpubList.css';
 import './components/EpubStructureTree.css';
 import './components/EpubReader.css';
 import './components/Toolbar.css';
+import './components/NotificationCenter.css';
 
 function App() {
   const {
+    epubs,
     selectedEpubId,
-    loadEpubStructure,
     isConverting,
     conversionProgress,
     convertSimplifiedTraditional,
@@ -30,12 +31,6 @@ function App() {
     imageProcessingSkipped,
     imageProcessingProcessedUnique,
   } = useEpubStore();
-
-  useEffect(() => {
-    if (selectedEpubId) {
-      loadEpubStructure(selectedEpubId);
-    }
-  }, [selectedEpubId]);
 
   const handleConversion = async (mode: ConversionMode) => {
     try {
@@ -52,6 +47,9 @@ function App() {
       // Error is already handled in the store
     }
   };
+
+  const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
+  const canRunTools = Boolean(selectedEpub?.refactoredStructure);
 
   return (
     <div className="app">
@@ -76,6 +74,7 @@ function App() {
             conversionProgress={conversionProgress}
             onProcessAllImages={handleProcessAllImages}
             isProcessingImages={isProcessingImages}
+            canRunTools={canRunTools}
             imageProcessingProgress={imageProcessingProgress}
             imageProcessingTotal={imageProcessingTotal}
             imageProcessingCurrentChapter={imageProcessingCurrentChapter}
@@ -88,6 +87,7 @@ function App() {
           <EpubReader />
         </section>
       </main>
+      <NotificationCenter />
     </div>
   );
 }

@@ -1,0 +1,136 @@
+.notification-center {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: grid;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.app-notification {
+  pointer-events: auto;
+  padding: 12px 12px 10px;
+  background-color: #ffffff;
+  border: 1px solid #dfe6ec;
+  border-left-width: 4px;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(28, 39, 49, 0.14);
+  color: #27343f;
+}
+
+.notification-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background-color: #4a90d9;
+}
+
+.notification-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.notification-close {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border: none;
+  border-radius: 4px;
+  background-color: transparent;
+  color: #7d8790;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.notification-close:hover {
+  background-color: #f0f3f5;
+  color: #303940;
+}
+
+.notification-message {
+  margin-top: 6px;
+  color: #596875;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.notification-details {
+  margin-top: 8px;
+  color: #4f5d68;
+  font-size: 12px;
+}
+
+.notification-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.notification-details pre {
+  max-height: 180px;
+  margin-top: 6px;
+  padding: 8px;
+  overflow: auto;
+  background-color: #f7f9fa;
+  border: 1px solid #e5eaef;
+  border-radius: 6px;
+  color: #384550;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.notification-success {
+  border-left-color: #2f8f5b;
+}
+
+.notification-success .notification-dot {
+  background-color: #2f8f5b;
+}
+
+.notification-error {
+  border-left-color: #c94c4c;
+}
+
+.notification-error .notification-dot {
+  background-color: #c94c4c;
+}
+
+.notification-warning {
+  border-left-color: #c28a1d;
+}
+
+.notification-warning .notification-dot {
+  background-color: #c28a1d;
+}
+
+.notification-info {
+  border-left-color: #4a90d9;
+}
+
+.notification-info .notification-dot {
+  background-color: #4a90d9;
+}
+
+@media (max-width: 768px) {
+  .notification-center {
+    top: 10px;
+    right: 10px;
+    width: calc(100vw - 20px);
+  }
+}

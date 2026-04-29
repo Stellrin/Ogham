@@ -8,7 +8,7 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
   epubId,
   epubName,
 }) => {
-  const { exportEpub } = useEpubStore();
+  const { exportEpub, addNotification } = useEpubStore();
   const [exporting, setExporting] = useState(false);
 
   const handleExport = async () => {
@@ -41,11 +41,18 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
           exportPath: filePath,
         });
 
-        alert(`导出成功: ${filePath}`);
+        addNotification({
+          kind: 'success',
+          title: '导出完成',
+          message: filePath,
+        });
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      alert(`导出失败: ${errorMessage}`);
+      addNotification({
+        kind: 'error',
+        title: '导出失败',
+        message: getErrorMessage(error),
+      });
     } finally {
       setExporting(false);
     }
@@ -63,3 +70,7 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
     </button>
   );
 };
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

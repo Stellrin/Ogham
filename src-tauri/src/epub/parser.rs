@@ -1,3 +1,4 @@
+use super::epub_path;
 use super::models::*;
 use epub::doc::EpubDoc;
 use std::collections::HashMap;
@@ -42,8 +43,7 @@ impl From<zip::result::ZipError> for EpubParseError {
 /// 解析 EPUB 主入口函数
 pub fn parse_epub(file_path: &str) -> Result<(ParsedEpub, String), EpubParseError> {
     // 使用 epub 库打开文档
-    let doc = EpubDoc::new(file_path)
-        .map_err(|e| EpubParseError::InvalidZip(e.to_string()))?;
+    let doc = EpubDoc::new(file_path).map_err(|e| EpubParseError::InvalidZip(e.to_string()))?;
 
     // 获取 OPF 路径
     let opf_path = doc.root_file.to_string_lossy().to_string();
@@ -94,13 +94,17 @@ fn extract_manifest(doc: &EpubDoc<BufReader<std::fs::File>>) -> Manifest {
     // 遍历所有资源
     for (id, resource) in doc.resources.iter() {
         let properties = if resource.properties.is_some() {
-            resource.properties.as_ref().map(|p| {
-                if p.is_empty() {
-                    None
-                } else {
-                    Some(p.split_whitespace().map(String::from).collect())
-                }
-            }).flatten()
+            resource
+                .properties
+                .as_ref()
+                .map(|p| {
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p.split_whitespace().map(String::from).collect())
+                    }
+                })
+                .flatten()
         } else {
             None
         };
@@ -109,7 +113,7 @@ fn extract_manifest(doc: &EpubDoc<BufReader<std::fs::File>>) -> Manifest {
             id.clone(),
             ManifestItem {
                 id: id.clone(),
-                href: resource.path.to_string_lossy().to_string(),
+                href: epub_path::normalize(&resource.path.to_string_lossy()),
                 media_type: resource.mime.clone(),
                 properties,
             },
@@ -155,7 +159,7 @@ fn convert_epub_toc(epub_toc: &[epub::doc::NavPoint]) -> Vec<NavPoint> {
         .map(|epub_nav| NavPoint {
             id: format!("nav-point-{:?}", epub_nav.play_order),
             label: epub_nav.label.clone(),
-            content_src: epub_nav.content.to_string_lossy().to_string(),
+            content_src: epub_path::normalize_reference(&epub_nav.content.to_string_lossy()),
             children: convert_epub_toc(&epub_nav.children),
         })
         .collect()
@@ -178,9 +182,6 @@ pub fn get_chapter_content(
     // 使用 epub 库的 get_resource_str 方法
     match doc.get_resource_str(id) {
         Some((content, _mime)) => Ok(content),
-        None => Err(EpubParseError::MissingFile(format!(
-            "章节不存在: {}",
-            id
-        ))),
+        None => Err(EpubParseError::MissingFile(format!("章节不存在: {}", id))),
     }
 }

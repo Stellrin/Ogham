@@ -1,5 +1,5 @@
 use super::models::*;
-use super::parser::{EpubParseError, get_opf_base_path};
+use super::parser::{get_opf_base_path, EpubParseError};
 use base64::Engine;
 use regex::Regex;
 use std::fs::File;
@@ -12,18 +12,18 @@ pub fn extract_chapter_content(
     chapter_path: &str,
     _manifest: &Manifest,
 ) -> Result<ChapterContent, EpubParseError> {
-    let file =
-        File::open(epub_path).map_err(|e| EpubParseError::InvalidZip(e.to_string()))?;
+    let file = File::open(epub_path).map_err(|e| EpubParseError::InvalidZip(e.to_string()))?;
     let mut archive = ZipArchive::new(file)?;
 
     // 读取章节 HTML
     let html_content = {
-        let mut chapter_file = archive
-            .by_name(chapter_path)
-            .map_err(|_| {
-                println!("[ERROR] Failed to find chapter '{}' in ZIP archive", chapter_path);
-                EpubParseError::MissingFile(chapter_path.to_string())
-            })?;
+        let mut chapter_file = archive.by_name(chapter_path).map_err(|_| {
+            println!(
+                "[ERROR] Failed to find chapter '{}' in ZIP archive",
+                chapter_path
+            );
+            EpubParseError::MissingFile(chapter_path.to_string())
+        })?;
 
         let mut content = String::new();
         chapter_file
@@ -73,8 +73,8 @@ fn extract_resources(
     };
 
     // 正则表达式匹配 src=""、href="" 和 xlink:href="" 属性
-    let src_regex =
-        Regex::new(r#"(src|href|xlink:href)="([^"]+)""#).map_err(|e| EpubParseError::XmlError(e.to_string()))?;
+    let src_regex = Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
+        .map_err(|e| EpubParseError::XmlError(e.to_string()))?;
 
     for captures in src_regex.captures_iter(html) {
         let resource_path = &captures[2];
@@ -193,8 +193,8 @@ fn rewrite_resource_urls(
 
     for (original_path, resource_data) in resources {
         // 只处理图片类型的资源（image/*, svg+xml）
-        let is_image = resource_data.mime_type.starts_with("image/") ||
-                       resource_data.mime_type.contains("svg");
+        let is_image = resource_data.mime_type.starts_with("image/")
+            || resource_data.mime_type.contains("svg");
 
         if !is_image {
             continue; // 跳过非图片资源
@@ -222,10 +222,7 @@ fn rewrite_resource_urls(
 }
 
 /// 将解析的 EPUB 转换为前端需要的结构格式
-pub fn convert_to_structure_result(
-    parsed: &ParsedEpub,
-    opf_path: &str,
-) -> EpubStructureResult {
+pub fn convert_to_structure_result(parsed: &ParsedEpub, opf_path: &str) -> EpubStructureResult {
     let oebps_path = get_opf_base_path(opf_path);
 
     // 从 manifest 中提取各种文件
@@ -268,7 +265,11 @@ pub fn convert_to_structure_result(
             images.push(item.href.clone());
         } else if item.media_type == "application/x-dtbncx+xml" {
             toc_ncx = Some(item.href.clone());
-        } else if item.properties.as_ref().map_or(false, |p| p.contains(&"nav".to_string())) {
+        } else if item
+            .properties
+            .as_ref()
+            .map_or(false, |p| p.contains(&"nav".to_string()))
+        {
             nav_xhtml = Some(item.href.clone());
         }
     }

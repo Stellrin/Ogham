@@ -5,7 +5,7 @@ import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName, resol
 import './EpubReader.css';
 
 export const EpubReader: React.FC = () => {
-  const { epubs, selectedEpubId, readerState, loadChapterContent, loadRefactoredChapter, setReaderState } =
+  const { epubs, selectedEpubId, readerState, loadRefactoredChapter, setReaderState } =
     useEpubStore();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
@@ -13,10 +13,7 @@ export const EpubReader: React.FC = () => {
 
   const selectedEpub = epubs.find((e) => e.id === selectedEpubId);
 
-  // 优先使用重构后的结构，回退到原始结构
-  const chapters = selectedEpub?.refactoredStructure?.structure.chapters ||
-                   selectedEpub?.structure?.chapters ||
-                   [];
+  const chapters = selectedEpub?.refactoredStructure?.structure.chapters || [];
 
   // 标准化章节路径：将 "Text/x.xhtml" 补全为 "OEBPS/Text/x.xhtml" 以兼容旧格式
   const normalizeChapterPath = (p: string | null): string => {
@@ -30,9 +27,6 @@ export const EpubReader: React.FC = () => {
   const currentChapter = chapters.find(
     (c) => getChapterPath(c) === normalizedCurrentPath
   );
-
-  // 检查是否使用重构后的 EPUB
-  const useRefactored = !!selectedEpub?.refactoredStructure?.epubId;
 
   // 当章节路径改变时加载章节内容
   useEffect(() => {
@@ -68,11 +62,10 @@ export const EpubReader: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      if (useRefactored && selectedEpub?.epubId) {
-        await loadRefactoredChapter(selectedEpub.epubId, chapterPath);
-      } else {
-        await loadChapterContent(chapterPath);
+      if (!selectedEpub?.epubId) {
+        throw new Error('EPUB 尚未完成标准化导入');
       }
+      await loadRefactoredChapter(selectedEpub.epubId, chapterPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

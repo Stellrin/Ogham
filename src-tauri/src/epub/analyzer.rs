@@ -1,3 +1,4 @@
+use super::epub_path;
 use super::models::*;
 use std::collections::{HashMap, HashSet};
 
@@ -7,13 +8,16 @@ pub fn analyze_epub_structure(
     _opf_path: &str,
 ) -> Result<EpubStructureAnalysis, RefactorError> {
     // 识别章节文件（从 spine）
-    let chapters = identify_chapters(parsed)?;
+    let mut chapters = identify_chapters(parsed)?;
 
     // 分类资源文件
-    let resources = categorize_resources(parsed, &chapters)?;
+    let mut resources = categorize_resources(parsed, &chapters)?;
 
     // 识别特殊文件
     let special_files = identify_special_files(parsed)?;
+
+    // 标准目录落到真实文件系统上，必须提前处理大小写不敏感平台上的路径冲突
+    allocate_unique_standard_paths(&mut chapters, &mut resources);
 
     // 构建文件映射
     let file_map = build_file_map(&chapters, &resources, &special_files);
@@ -45,8 +49,8 @@ fn identify_chapters(parsed: &ParsedEpub) -> Result<Vec<ExtendedChapterInfo>, Re
             continue;
         }
 
-        // 跳过特殊文件（如 nav.xhtml）
-        if is_special_file(&manifest_item) {
+        // 跳过导航文件；封面页如果在 spine 中，仍按阅读顺序作为 Text/ 文件管理
+        if is_navigation_file(&manifest_item) {
             continue;
         }
 
@@ -57,7 +61,7 @@ fn identify_chapters(parsed: &ParsedEpub) -> Result<Vec<ExtendedChapterInfo>, Re
         seen_ids.insert(manifest_item.id.clone());
 
         // 提取文件名
-        let standard_path = build_standard_path("Text", &manifest_item.href, &["Text"]);
+        let standard_path = epub_path::standard_path("Text", &manifest_item.href, &["Text"]);
 
         // 尝试从 TOC 中获取标题
         let title = extract_title_from_toc(parsed, &manifest_item.href);
@@ -93,17 +97,23 @@ fn is_chapter_media_type(media_type: &str) -> bool {
 fn is_special_file(item: &ManifestItem) -> bool {
     item.properties
         .as_ref()
-        .map(|props| props.iter().any(|p| matches!(p.as_str(), "nav" | "cover")))
+        .map(|props| {
+            props.iter().any(|p| p == "nav")
+                || props.iter().any(|p| p == "cover") && is_chapter_media_type(&item.media_type)
+        })
+        .unwrap_or(false)
+        || item.media_type == "application/x-dtbncx+xml"
+}
+
+fn has_property(item: &ManifestItem, property: &str) -> bool {
+    item.properties
+        .as_ref()
+        .map(|props| props.iter().any(|p| p == property))
         .unwrap_or(false)
 }
 
-/// 提取文件名（不包含路径）
-fn extract_filename(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .or_else(|| path.rsplit('\\').next())
-        .unwrap_or(path)
-        .to_string()
+fn is_navigation_file(item: &ManifestItem) -> bool {
+    has_property(item, "nav")
 }
 
 /// 从 TOC 中提取章节标题
@@ -116,11 +126,11 @@ fn extract_title_from_toc(parsed: &ParsedEpub, href: &str) -> Option<String> {
 
 /// 在导航点中查找标题
 fn find_title_in_nav_points(nav_points: &[NavPoint], href: &str) -> Option<String> {
-    let normalized_href = normalize_href(href);
+    let normalized_href = epub_path::normalize(href);
 
     for nav_point in nav_points {
         // 检查当前导航点
-        if normalize_href(&nav_point.content_src) == normalized_href {
+        if epub_path::normalize(&nav_point.content_src) == normalized_href {
             return Some(nav_point.label.clone());
         }
 
@@ -217,10 +227,14 @@ fn classify_resource_type(media_type: &str) -> ResourceType {
 /// 根据媒体类型分类资源路径
 fn classify_resource_path(media_type: &str, original_href: &str) -> String {
     match classify_resource_type(media_type) {
-        ResourceType::Style => build_standard_path("Styles", original_href, &["Styles", "Style"]),
-        ResourceType::Image => build_standard_path("Images", original_href, &["Images", "Image"]),
-        ResourceType::Font => build_standard_path("Fonts", original_href, &["Fonts", "Font"]),
-        ResourceType::Misc => build_standard_path("Misc", original_href, &["Misc"]),
+        ResourceType::Style => {
+            epub_path::standard_path("Styles", original_href, &["Styles", "Style"])
+        }
+        ResourceType::Image => {
+            epub_path::standard_path("Images", original_href, &["Images", "Image"])
+        }
+        ResourceType::Font => epub_path::standard_path("Fonts", original_href, &["Fonts", "Font"]),
+        ResourceType::Misc => epub_path::standard_path("Misc", original_href, &["Misc"]),
     }
 }
 
@@ -252,7 +266,7 @@ fn identify_special_files(parsed: &ParsedEpub) -> Result<SpecialFiles, RefactorE
     // 如果没有找到 nav，尝试通过文件名查找
     if nav.is_none() {
         for (_id, item) in &parsed.manifest.items {
-            let filename = extract_filename(&item.href);
+            let filename = epub_path::filename(&item.href);
             if filename == "nav.xhtml" {
                 nav = Some(item.href.clone());
                 break;
@@ -271,11 +285,13 @@ fn build_file_map(
 ) -> FileMap {
     let mut original_to_standard = HashMap::new();
     let mut standard_to_original = HashMap::new();
+    let mut used_standard_paths = HashSet::new();
 
     // 添加章节映射
     for chapter in chapters {
         original_to_standard.insert(chapter.original_path.clone(), chapter.standard_path.clone());
         standard_to_original.insert(chapter.standard_path.clone(), chapter.original_path.clone());
+        used_standard_paths.insert(epub_path::casefold(&chapter.standard_path));
     }
 
     // 添加资源映射
@@ -293,23 +309,29 @@ fn build_file_map(
             resource.standard_path.clone(),
             resource.original_path.clone(),
         );
+        used_standard_paths.insert(epub_path::casefold(&resource.standard_path));
     }
 
     // 添加特殊文件映射
     if let Some(ref cover) = special_files.cover {
-        let standard_path = build_standard_path("Text", cover, &["Text"]);
-        original_to_standard.insert(cover.clone(), standard_path.clone());
-        standard_to_original.insert(standard_path, cover.clone());
+        if !original_to_standard.contains_key(cover) {
+            let standard_path = epub_path::allocate_unique_path(
+                &epub_path::standard_path("Text", cover, &["Text"]),
+                &mut used_standard_paths,
+            );
+            original_to_standard.insert(cover.clone(), standard_path.clone());
+            standard_to_original.insert(standard_path, cover.clone());
+        }
     }
 
     if let Some(ref nav) = special_files.nav {
-        let standard_path = format!("OEBPS/{}", extract_filename(nav));
+        let standard_path = format!("OEBPS/{}", epub_path::filename(nav));
         original_to_standard.insert(nav.clone(), standard_path.clone());
         standard_to_original.insert(standard_path, nav.clone());
     }
 
     if let Some(ref ncx) = special_files.ncx {
-        let standard_path = format!("OEBPS/{}", extract_filename(ncx));
+        let standard_path = format!("OEBPS/{}", epub_path::filename(ncx));
         original_to_standard.insert(ncx.clone(), standard_path.clone());
         standard_to_original.insert(standard_path, ncx.clone());
     }
@@ -320,38 +342,27 @@ fn build_file_map(
     }
 }
 
-fn normalize_href(path: &str) -> String {
-    path.replace('\\', "/")
-        .split('#')
-        .next()
-        .unwrap_or(path)
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .to_string()
-}
+fn allocate_unique_standard_paths(
+    chapters: &mut [ExtendedChapterInfo],
+    resources: &mut ResourceCollection,
+) {
+    let mut used_paths = HashSet::new();
 
-fn build_standard_path(target_root: &str, original_href: &str, strip_prefixes: &[&str]) -> String {
-    let mut normalized = normalize_href(original_href);
-
-    if let Some(rest) = normalized.strip_prefix("OEBPS/") {
-        normalized = rest.to_string();
+    for chapter in chapters {
+        chapter.standard_path =
+            epub_path::allocate_unique_path(&chapter.standard_path, &mut used_paths);
     }
 
-    for prefix in strip_prefixes {
-        let candidate = format!("{}/", prefix);
-        if normalized.starts_with(&candidate) {
-            normalized = normalized[candidate.len()..].to_string();
-            break;
-        }
-
-        let candidate_lower = candidate.to_lowercase();
-        if normalized.to_lowercase().starts_with(&candidate_lower) {
-            normalized = normalized[candidate.len()..].to_string();
-            break;
-        }
+    for resource in resources
+        .styles
+        .iter_mut()
+        .chain(resources.images.iter_mut())
+        .chain(resources.fonts.iter_mut())
+        .chain(resources.misc.iter_mut())
+    {
+        resource.standard_path =
+            epub_path::allocate_unique_path(&resource.standard_path, &mut used_paths);
     }
-
-    format!("OEBPS/{}/{}", target_root, normalized)
 }
 
 #[cfg(test)]
@@ -392,12 +403,38 @@ mod tests {
     #[test]
     fn build_standard_path_preserves_nested_directories() {
         assert_eq!(
-            build_standard_path("Text", "Text/part1/chapter.xhtml", &["Text"]),
+            epub_path::standard_path("Text", "Text/part1/chapter.xhtml", &["Text"]),
             "OEBPS/Text/part1/chapter.xhtml"
         );
         assert_eq!(
-            build_standard_path("Images", "images/covers/cover.jpg", &["Images", "Image"]),
+            epub_path::standard_path("Images", "images/covers/cover.jpg", &["Images", "Image"]),
             "OEBPS/Images/covers/cover.jpg"
         );
+    }
+
+    #[test]
+    fn allocate_unique_paths_suffixes_collisions_case_insensitively() {
+        let mut used = HashSet::new();
+
+        assert_eq!(
+            epub_path::allocate_unique_path("OEBPS/Images/cover.jpg", &mut used),
+            "OEBPS/Images/cover.jpg"
+        );
+        assert_eq!(
+            epub_path::allocate_unique_path("OEBPS/Images/COVER.jpg", &mut used),
+            "OEBPS/Images/COVER-1.jpg"
+        );
+    }
+
+    #[test]
+    fn cover_images_remain_regular_image_resources() {
+        let item = ManifestItem {
+            id: "cover-image".to_string(),
+            href: "Images/cover.jpg".to_string(),
+            media_type: "image/jpeg".to_string(),
+            properties: Some(vec!["cover".to_string()]),
+        };
+
+        assert!(!is_special_file(&item));
     }
 }

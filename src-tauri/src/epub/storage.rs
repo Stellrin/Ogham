@@ -1,8 +1,8 @@
 use super::models::*;
 use std::fs::{self, File};
-use std::io::{Write, Read, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
-use zip::{ZipWriter, write::FileOptions};
+use zip::{write::FileOptions, ZipWriter};
 
 /// 获取 EPUB 存储路径
 pub fn get_epub_storage_path(epub_id: &str) -> String {
@@ -20,7 +20,9 @@ pub fn create_standard_directories(base_path: &str) -> Result<(), RefactorError>
         Path::new(base_path).join("OEBPS/Styles"),
         Path::new(base_path).join("OEBPS/Images"),
         Path::new(base_path).join("OEBPS/Fonts"),
+        Path::new(base_path).join("OEBPS/Misc"),
         Path::new(base_path).join("META-INF"),
+        Path::new(base_path).join(".ogham"),
     ];
 
     for path in &paths {
@@ -34,13 +36,89 @@ pub fn create_standard_directories(base_path: &str) -> Result<(), RefactorError>
     Ok(())
 }
 
+pub fn save_workspace_metadata(
+    storage_path: &str,
+    metadata: &OghamWorkspaceMetadata,
+) -> Result<(), RefactorError> {
+    let metadata_dir = Path::new(storage_path).join(".ogham");
+    fs::create_dir_all(&metadata_dir).map_err(|e| {
+        RefactorError::IoError(format!(
+            "无法创建 Ogham 元数据目录 {:?}: {}",
+            metadata_dir, e
+        ))
+    })?;
+
+    let metadata_path = metadata_dir.join("metadata.json");
+    let json = serde_json::to_string_pretty(metadata)
+        .map_err(|e| RefactorError::ParseError(format!("无法序列化 Ogham 元数据: {}", e)))?;
+
+    fs::write(&metadata_path, json).map_err(|e| {
+        RefactorError::IoError(format!("无法写入 Ogham 元数据 {:?}: {}", metadata_path, e))
+    })?;
+
+    Ok(())
+}
+
+pub fn load_workspace_metadata(
+    storage_path: &str,
+) -> Result<Option<OghamWorkspaceMetadata>, RefactorError> {
+    let metadata_path = Path::new(storage_path).join(".ogham/metadata.json");
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+
+    let json = fs::read_to_string(&metadata_path).map_err(|e| {
+        RefactorError::IoError(format!("无法读取 Ogham 元数据 {:?}: {}", metadata_path, e))
+    })?;
+
+    let metadata = serde_json::from_str(&json)
+        .map_err(|e| RefactorError::ParseError(format!("无法解析 Ogham 元数据: {}", e)))?;
+
+    Ok(Some(metadata))
+}
+
+pub fn save_resource_index(storage_path: &str, index: &ResourceIndex) -> Result<(), RefactorError> {
+    let metadata_dir = Path::new(storage_path).join(".ogham");
+    fs::create_dir_all(&metadata_dir).map_err(|e| {
+        RefactorError::IoError(format!(
+            "无法创建 Ogham 元数据目录 {:?}: {}",
+            metadata_dir, e
+        ))
+    })?;
+
+    let index_path = metadata_dir.join("resource_index.json");
+    let json = serde_json::to_string_pretty(index)
+        .map_err(|e| RefactorError::ParseError(format!("无法序列化资源索引: {}", e)))?;
+
+    fs::write(&index_path, json)
+        .map_err(|e| RefactorError::IoError(format!("无法写入资源索引 {:?}: {}", index_path, e)))?;
+
+    Ok(())
+}
+
+pub fn load_resource_index(storage_path: &str) -> Result<Option<ResourceIndex>, RefactorError> {
+    let index_path = Path::new(storage_path).join(".ogham/resource_index.json");
+    if !index_path.exists() {
+        return Ok(None);
+    }
+
+    let json = fs::read_to_string(&index_path)
+        .map_err(|e| RefactorError::IoError(format!("无法读取资源索引 {:?}: {}", index_path, e)))?;
+
+    let index = serde_json::from_str(&json)
+        .map_err(|e| RefactorError::ParseError(format!("无法解析资源索引: {}", e)))?;
+
+    Ok(Some(index))
+}
+
 /// 写入标准支持文件（mimetype 和 container.xml）
 pub fn write_standard_support_files(base_path: &str) -> Result<(), RefactorError> {
     // 写入 mimetype 文件
     let mimetype_path = Path::new(base_path).join("mimetype");
     let mut mimetype_file = File::create(&mimetype_path)
         .map_err(|e| RefactorError::IoError(format!("无法创建 mimetype 文件: {}", e)))?;
-    mimetype_file.write_all(b"application/epub+zip")
+    mimetype_file
+        .write_all(b"application/epub+zip")
         .map_err(|e| RefactorError::IoError(format!("无法写入 mimetype 文件: {}", e)))?;
 
     // 写入 container.xml 文件
@@ -60,7 +138,8 @@ pub fn write_standard_support_files(base_path: &str) -> Result<(), RefactorError
 </container>
 "##;
 
-    container_file.write_all(container_xml.as_bytes())
+    container_file
+        .write_all(container_xml.as_bytes())
         .map_err(|e| RefactorError::IoError(format!("无法写入 container.xml 文件: {}", e)))?;
 
     Ok(())
@@ -73,7 +152,9 @@ pub fn save_refactored_epub(
 ) -> Result<String, RefactorError> {
     // 创建输出 ZIP 文件路径（使用系统临时目录）
     let temp_dir = std::env::temp_dir();
-    let output_path = temp_dir.join("ogham-library").join(format!("{}_refactored.epub", epub_id));
+    let output_path = temp_dir
+        .join("ogham-library")
+        .join(format!("{}_refactored.epub", epub_id));
     let output_path_str = output_path.to_string_lossy().to_string();
 
     // 创建 ZIP 文件
@@ -83,8 +164,8 @@ pub fn save_refactored_epub(
     let mut zip = ZipWriter::new(file);
 
     // 首先添加 mimetype 文件（不压缩）
-    let options_mimetype = FileOptions::<()>::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options_mimetype =
+        FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("mimetype", options_mimetype)
         .map_err(|e| RefactorError::IoError(format!("无法添加 mimetype: {}", e)))?;
     zip.write_all(b"application/epub+zip")
@@ -104,7 +185,11 @@ pub fn save_refactored_epub(
         .map_err(|e| RefactorError::IoError(format!("无法写入 container.xml: {}", e)))?;
 
     // 递归添加 OEBPS 目录下的所有文件
-    add_directory_to_zip(&mut zip, &Path::new(&refactored.storage_path).join("OEBPS"), "OEBPS")?;
+    add_directory_to_zip(
+        &mut zip,
+        &Path::new(&refactored.storage_path).join("OEBPS"),
+        "OEBPS",
+    )?;
 
     // 完成 ZIP 文件
     zip.finish()
@@ -123,13 +208,16 @@ fn add_directory_to_zip<W: Write + Seek>(
         .map_err(|e| RefactorError::IoError(format!("无法读取目录 {:?}: {}", dir_path, e)))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| RefactorError::IoError(format!("无法读取目录项: {}", e)))?;
+        let entry = entry.map_err(|e| RefactorError::IoError(format!("无法读取目录项: {}", e)))?;
         let path = entry.path();
 
         if path.is_dir() {
             // 递归处理子目录
-            let new_prefix = format!("{}/{}", zip_prefix, path.file_name().unwrap().to_string_lossy());
+            let new_prefix = format!(
+                "{}/{}",
+                zip_prefix,
+                path.file_name().unwrap().to_string_lossy()
+            );
             add_directory_to_zip(zip, &path, &new_prefix)?;
         } else {
             // 添加文件到 ZIP
@@ -155,10 +243,7 @@ fn add_directory_to_zip<W: Write + Seek>(
 }
 
 /// 从重构后的 EPUB 读取文件
-pub fn read_refactored_file(
-    storage_path: &str,
-    file_path: &str,
-) -> Result<Vec<u8>, RefactorError> {
+pub fn read_refactored_file(storage_path: &str, file_path: &str) -> Result<Vec<u8>, RefactorError> {
     let full_path = Path::new(storage_path).join(file_path);
 
     fs::read(&full_path)
@@ -184,8 +269,9 @@ pub fn cleanup_ogham_library() -> Result<(), RefactorError> {
     let ogham_lib_path = temp_dir.join("ogham-library");
 
     if ogham_lib_path.exists() {
-        fs::remove_dir_all(&ogham_lib_path)
-            .map_err(|e| RefactorError::IoError(format!("无法删除库目录 {:?}: {}", ogham_lib_path, e)))?;
+        fs::remove_dir_all(&ogham_lib_path).map_err(|e| {
+            RefactorError::IoError(format!("无法删除库目录 {:?}: {}", ogham_lib_path, e))
+        })?;
     }
 
     Ok(())
@@ -198,10 +284,7 @@ pub fn epub_exists(epub_id: &str) -> bool {
 }
 
 /// 导出重构后的 EPUB 到指定路径
-pub fn export_refactored_epub(
-    epub_id: &str,
-    export_path: &str,
-) -> Result<String, RefactorError> {
+pub fn export_refactored_epub(epub_id: &str, export_path: &str) -> Result<String, RefactorError> {
     let storage_path = get_epub_storage_path(&epub_id);
 
     // 检查源文件是否存在
@@ -222,7 +305,7 @@ pub fn export_refactored_epub(
 /// 从存储目录重新构建 EPUB ZIP 文件
 fn rebuild_epub_zip(
     storage_path: &str,
-    epub_id: &str,
+    _epub_id: &str,
     export_path: &str,
 ) -> Result<(), RefactorError> {
     // 创建 ZIP 文件
@@ -232,8 +315,8 @@ fn rebuild_epub_zip(
     let mut zip = ZipWriter::new(file);
 
     // 首先添加 mimetype 文件（不压缩）
-    let options_mimetype = FileOptions::<()>::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options_mimetype =
+        FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("mimetype", options_mimetype)
         .map_err(|e| RefactorError::IoError(format!("无法添加 mimetype: {}", e)))?;
     zip.write_all(b"application/epub+zip")
@@ -295,6 +378,36 @@ mod tests {
         // 清理
         fs::remove_dir_all(temp_dir).unwrap();
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_workspace_metadata_roundtrip() -> Result<(), RefactorError> {
+        let temp_dir = std::env::temp_dir().join("ogham-metadata-test");
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir).unwrap();
+        }
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let metadata = OghamWorkspaceMetadata {
+            version: 1,
+            epub_id: "epub-1".to_string(),
+            source_path: "book.epub".to_string(),
+            source_name: "book.epub".to_string(),
+            file_map: FileMap {
+                original_to_standard: std::collections::HashMap::new(),
+                standard_to_original: std::collections::HashMap::new(),
+            },
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        save_workspace_metadata(temp_dir.to_str().unwrap(), &metadata)?;
+        let loaded = load_workspace_metadata(temp_dir.to_str().unwrap())?.unwrap();
+
+        assert_eq!(loaded.epub_id, "epub-1");
+
+        fs::remove_dir_all(temp_dir).unwrap();
         Ok(())
     }
 

@@ -1,6 +1,7 @@
-use super::models::{
-    ImageProcessFailure, ImageProcessProgress, ImageProcessResult, RefactorError,
-};
+use super::epub_path;
+use super::models::{ImageProcessFailure, ImageProcessProgress, ImageProcessResult, RefactorError};
+use super::opf_document;
+use super::resource_index;
 use super::storage::get_epub_storage_path;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -16,16 +17,14 @@ pub fn download_image(url: &str) -> Result<(Vec<u8>, String), RefactorError> {
         .build()
         .map_err(|e| RefactorError::IoError(format!("创建 HTTP 客户端失败: {}", e)))?;
 
-    let response = client.get(url)
+    let response = client
+        .get(url)
         .send()
         .map_err(|e| RefactorError::IoError(format!("下载图片失败: {}", e)))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(RefactorError::IoError(format!(
-            "HTTP 请求失败: {}",
-            status
-        )));
+        return Err(RefactorError::IoError(format!("HTTP 请求失败: {}", status)));
     }
 
     // 获取 Content-Type 头
@@ -59,59 +58,39 @@ fn get_extension_from_mime(mime: &str) -> String {
 }
 
 fn is_chapter_href(href: &str) -> bool {
-    let normalized = href.replace('\\', "/").to_lowercase();
+    let normalized = epub_path::normalize(href).to_lowercase();
     (normalized.starts_with("text/") || normalized.contains("/text/"))
         && (normalized.ends_with(".xhtml") || normalized.ends_with(".html"))
 }
 
 /// 添加图片到 OPF manifest
-fn add_image_to_manifest(storage_path: &str, image_filename: &str, mime_type: &str) -> Result<(), RefactorError> {
-    let opf_path = Path::new(storage_path).join("OEBPS/content.opf");
-
-    // 读取现有 OPF 文件
-    let opf_content = fs::read_to_string(&opf_path)
-        .map_err(|e| RefactorError::IoError(format!("无法读取 OPF 文件: {}", e)))?;
-
+fn add_image_to_manifest(
+    storage_path: &str,
+    image_filename: &str,
+    mime_type: &str,
+) -> Result<(), RefactorError> {
     let href = format!("Images/{}", image_filename);
-
-    if opf_content.contains(&format!("href=\"{}\"", href)) {
+    let document = opf_document::load_opf_document(storage_path, "unknown")?;
+    if document.manifest.items.iter().any(|item| item.href == href) {
         return Ok(());
     }
 
-    // 生成唯一 ID
     let stem = image_filename
         .rsplit_once('.')
         .map(|(s, _)| s)
         .unwrap_or(image_filename);
+    let item_id =
+        opf_document::make_unique_manifest_id(&document.manifest, &format!("img_{}", stem));
 
-    let mut item_id = format!("img_{}", stem);
-    let mut suffix = 1;
-    while opf_content.contains(&format!("id=\"{}\"", item_id)) {
-        item_id = format!("img_{}_{}", stem, suffix);
-        suffix += 1;
-    }
-
-    // 构建新的 manifest 项
-    let new_item = format!(
-        "    <item id=\"{}\" href=\"{}\" media-type=\"{}\" />",
-        item_id, href, mime_type
-    );
-
-    // 插入到 manifest 开始标签之后
-    let marker = "<manifest>";
-    if let Some(pos) = opf_content.find(marker) {
-        let insert_pos = pos + marker.len();
-        let mut new_opf = opf_content[..insert_pos].to_string();
-        new_opf.push('\n');
-        new_opf.push_str(&new_item);
-        new_opf.push_str(&opf_content[insert_pos..]);
-
-        // 写回 OPF 文件
-        fs::write(&opf_path, &new_opf)
-            .map_err(|e| RefactorError::IoError(format!("无法写入 OPF 文件: {}", e)))?;
-    }
-
-    Ok(())
+    opf_document::append_manifest_item(
+        storage_path,
+        &crate::epub::models::StandardManifestItem {
+            id: item_id,
+            href,
+            media_type: mime_type.to_string(),
+            properties: None,
+        },
+    )
 }
 
 fn next_image_index(images_dir: &Path) -> u32 {
@@ -139,34 +118,17 @@ fn next_image_index(images_dir: &Path) -> u32 {
 }
 
 fn collect_chapters_by_spine(storage_path: &str) -> Result<Vec<String>, RefactorError> {
-    let opf_path = Path::new(storage_path).join("OEBPS/content.opf");
-    let opf_content = fs::read_to_string(&opf_path)
-        .map_err(|e| RefactorError::IoError(format!("无法读取 OPF 文件: {}", e)))?;
-
-    let item_re = Regex::new(r#"<item\s+[^>]*id="([^"]+)"[^>]*href="([^"]+)"[^>]*/?>"#)
-        .map_err(|e| RefactorError::IoError(format!("解析 manifest 规则失败: {}", e)))?;
-    let itemref_re = Regex::new(r#"<itemref\s+[^>]*idref="([^"]+)"[^>]*/?>"#)
-        .map_err(|e| RefactorError::IoError(format!("解析 spine 规则失败: {}", e)))?;
-
+    let document = opf_document::load_opf_document(storage_path, "unknown")?;
     let mut id_to_href: HashMap<String, String> = HashMap::new();
-    for caps in item_re.captures_iter(&opf_content) {
-        let id = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-        let href = caps
-            .get(2)
-            .map(|m| m.as_str())
-            .unwrap_or("")
-            .replace('\\', "/");
-        if !id.is_empty() && !href.is_empty() {
-            id_to_href.insert(id, href);
-        }
+    for item in &document.manifest.items {
+        id_to_href.insert(item.id.clone(), epub_path::to_opf_href(&item.href));
     }
 
     let mut chapters = Vec::new();
-    for caps in itemref_re.captures_iter(&opf_content) {
-        let idref = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        if let Some(href) = id_to_href.get(idref) {
+    for itemref in &document.spine.itemrefs {
+        if let Some(href) = id_to_href.get(&itemref.idref) {
             if is_chapter_href(href) {
-                chapters.push(format!("OEBPS/{}", href));
+                chapters.push(epub_path::manifest_path(href));
             }
         }
     }
@@ -232,7 +194,11 @@ fn emit_progress<F>(
 }
 
 /// 处理整本 EPUB 中所有章节的图片链接，返回处理结果统计
-pub fn process_all_images<F>(epub_id: &str, task_id: &str, mut progress_callback: F) -> Result<ImageProcessResult, RefactorError>
+pub fn process_all_images<F>(
+    epub_id: &str,
+    task_id: &str,
+    mut progress_callback: F,
+) -> Result<ImageProcessResult, RefactorError>
 where
     F: FnMut(ImageProcessProgress),
 {
@@ -248,8 +214,9 @@ where
 
     for chapter_path in &chapter_files {
         let full_chapter_path = Path::new(&storage_path).join(chapter_path);
-        let content = fs::read_to_string(&full_chapter_path)
-            .map_err(|e| RefactorError::IoError(format!("无法读取章节文件 {}: {}", chapter_path, e)))?;
+        let content = fs::read_to_string(&full_chapter_path).map_err(|e| {
+            RefactorError::IoError(format!("无法读取章节文件 {}: {}", chapter_path, e))
+        })?;
 
         let mut matches = Vec::new();
         for caps in image_link_re.captures_iter(&content) {
@@ -281,7 +248,8 @@ where
     let mut inserted_images = 0u32;
     let mut failures: Vec<ImageProcessFailure> = Vec::new();
 
-    for (chapter_idx, (chapter_path, content, matches)) in chapter_contents.into_iter().enumerate() {
+    for (chapter_idx, (chapter_path, content, matches)) in chapter_contents.into_iter().enumerate()
+    {
         let mut new_content = content.clone();
         let chapter_index = chapter_idx as u32 + 1;
 
@@ -359,7 +327,8 @@ where
 
                     add_image_to_manifest(&storage_path, &image_filename, &mime_type)?;
 
-                    let img_tag = format!("<p><img src=\"{}\" alt=\"图片\" /></p>", image_path_in_zip);
+                    let img_tag =
+                        format!("<p><img src=\"{}\" alt=\"图片\" /></p>", image_path_in_zip);
                     new_content = new_content.replacen(&matched_str, &img_tag, 1);
 
                     url_to_local_path.insert(url.clone(), image_path_in_zip);
@@ -436,6 +405,8 @@ where
             "章节处理完成",
         );
     }
+
+    resource_index::refresh_resource_index(epub_id, &storage_path)?;
 
     Ok(ImageProcessResult {
         task_id: task_id.to_string(),

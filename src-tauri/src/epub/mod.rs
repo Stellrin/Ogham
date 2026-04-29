@@ -117,7 +117,9 @@ fn chrono_timestamp_millis() -> u128 {
 
 #[tauri::command]
 pub async fn import_epub_command(file_path: String) -> Result<EpubInfo, String> {
-    import_epub(file_path)
+    tokio::task::spawn_blocking(move || import_epub(file_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 解析 EPUB 结构
@@ -160,7 +162,10 @@ pub async fn get_chapter_content_command(
 /// 注意：执行此操作后，会生成新的 epub_id（基于时间戳）
 #[tauri::command]
 pub async fn refactor_epub_command(epub_path: String) -> Result<RefactoredEpubResult, String> {
-    let refactored = refactor_epub(&epub_path).map_err(|e| e.to_string())?;
+    let refactored = tokio::task::spawn_blocking(move || refactor_epub(&epub_path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
 
     Ok(convert_to_refactored_result(&refactored))
 }
@@ -351,7 +356,8 @@ pub async fn process_all_images_command(
 /// 2. 从缓存目录 OEBPS/nav.xhtml 或 toc.ncx 读取目录结构
 /// 3. 返回当前缓存中的最新文件结构
 ///
-/// 注意：此操作会刷新 .ogham/resource_index.json，保证资源关系索引与缓存一致
+/// 注意：此操作优先复用 .ogham/resource_index.json；索引不存在或 epub_id 不匹配时自动重建。
+/// 会改写资源关系的命令应在落盘后主动刷新资源索引。
 #[tauri::command]
 pub async fn reload_epub_structure_command(
     epub_id: String,
@@ -445,7 +451,8 @@ pub async fn reload_epub_structure_command(
         navigation,
     };
 
-    resource_index::refresh_resource_index(&epub_id, &storage_path).map_err(|e| e.to_string())?;
+    resource_index::load_or_refresh_resource_index(&epub_id, &storage_path)
+        .map_err(|e| e.to_string())?;
 
     Ok(RefactoredEpubResult {
         epub_id: epub_id.clone(),

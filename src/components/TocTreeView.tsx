@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEpubStore, TocChapter } from '../store/epubStore';
+import { getChapterPath } from '../utils/epubPathUtils';
 
 interface TocTreeViewProps {
   entries: TocChapter[];
@@ -7,19 +8,59 @@ interface TocTreeViewProps {
 
 export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
   const {
+    epubs,
+    selectedEpubId,
     setReaderState,
     readerState,
     expandedTocIds,
     toggleTocExpanded,
   } = useEpubStore();
 
-  const handleEntryClick = (entry: TocChapter) => {
-    // 优先使用 filePath，回退到 contentSrc
-    const chapterPath = entry.filePath || entry.contentSrc;
-    if (chapterPath) {
+  const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
+  const chapters = selectedEpub?.refactoredStructure?.structure.chapters || [];
+
+  const normalizePath = (path: string | null | undefined): string => {
+    if (!path) return '';
+
+    let normalized = path.split('#')[0].replace(/\\/g, '/').replace(/\/+/g, '/');
+    try {
+      normalized = decodeURIComponent(normalized);
+    } catch {
+      // 保留原路径
+    }
+
+    if (normalized.startsWith('Text/')) {
+      normalized = `OEBPS/${normalized}`;
+    }
+
+    return normalized.toLowerCase();
+  };
+
+  const findChapterByPath = (chapterPath: string) => {
+    const normalizedTarget = normalizePath(chapterPath);
+    return chapters.find((chapter) => normalizePath(getChapterPath(chapter)) === normalizedTarget);
+  };
+
+  const getEntryFilePaths = (entry: TocChapter): string[] => {
+    const paths = entry.filePaths?.length
+      ? entry.filePaths
+      : [entry.filePath || entry.contentSrc].filter(Boolean);
+
+    return Array.from(new Set(paths));
+  };
+
+  const getFileName = (filePath: string): string => {
+    return filePath.split(/[\\/]/).pop() || filePath;
+  };
+
+  const openChapterPath = (chapterPath: string, fallbackOrder: number) => {
+    const chapter = findChapterByPath(chapterPath);
+    const standardPath = chapter ? getChapterPath(chapter) : chapterPath;
+
+    if (standardPath) {
       setReaderState({
-        currentChapterPath: chapterPath,
-        currentChapterIndex: entry.order,
+        currentChapterPath: standardPath,
+        currentChapterIndex: chapter?.order ?? fallbackOrder,
         scrollPosition: 0,
         viewingImagePath: null,
         viewingImageData: null,
@@ -27,11 +68,22 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
     }
   };
 
+  const handleEntryClick = (entry: TocChapter) => {
+    const chapterPath = getEntryFilePaths(entry)[0];
+    if (chapterPath) {
+      openChapterPath(chapterPath, entry.order);
+    }
+  };
+
   const renderEntry = (entry: TocChapter, depth: number = 0) => {
     const isExpanded = expandedTocIds.has(entry.id);
-    const chapterPath = entry.filePath || entry.contentSrc;
-    const isActive = chapterPath === readerState.currentChapterPath;
+    const filePaths = getEntryFilePaths(entry);
+    const chapterPath = filePaths[0] || entry.filePath || entry.contentSrc;
+    const isActive = filePaths.some(
+      (filePath) => normalizePath(filePath) === normalizePath(readerState.currentChapterPath)
+    );
     const hasChildren = entry.children.length > 0;
+    const hasMultipleFiles = filePaths.length > 1;
 
     return (
       <div key={entry.id} className="toc-entry" style={{ paddingLeft: `${depth * 16}px` }}>
@@ -61,12 +113,37 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
           {/* 文件路径 */}
           <span
             className="toc-file-path"
-            title={entry.contentSrc}
+            title={hasMultipleFiles ? filePaths.join('\n') : chapterPath}
             onClick={() => handleEntryClick(entry)}
           >
-            {entry.filePath?.split('/').pop() || entry.contentSrc}
+            {hasMultipleFiles ? `${filePaths.length} 个文件` : getFileName(chapterPath)}
           </span>
         </div>
+
+        {hasMultipleFiles && (
+          <div className="toc-linked-files">
+            {filePaths.map((filePath, index) => {
+              const isFileActive =
+                normalizePath(filePath) === normalizePath(readerState.currentChapterPath);
+
+              return (
+                <button
+                  key={filePath}
+                  type="button"
+                  className={`toc-linked-file ${isFileActive ? 'active' : ''}`}
+                  title={filePath}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openChapterPath(filePath, entry.order);
+                  }}
+                >
+                  <span className="toc-linked-file-index">{index + 1}</span>
+                  <span className="toc-linked-file-name">{getFileName(filePath)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* 子目录 */}
         {hasChildren && isExpanded && (

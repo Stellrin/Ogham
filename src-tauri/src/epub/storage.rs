@@ -145,59 +145,6 @@ pub fn write_standard_support_files(base_path: &str) -> Result<(), RefactorError
     Ok(())
 }
 
-/// 保存重构后的 EPUB 为 ZIP 文件
-pub fn save_refactored_epub(
-    refactored: &RefactoredEpub,
-    epub_id: &str,
-) -> Result<String, RefactorError> {
-    // 创建输出 ZIP 文件路径（使用系统临时目录）
-    let temp_dir = std::env::temp_dir();
-    let output_path = temp_dir
-        .join("ogham-library")
-        .join(format!("{}_refactored.epub", epub_id));
-    let output_path_str = output_path.to_string_lossy().to_string();
-
-    // 创建 ZIP 文件
-    let file = File::create(&output_path_str)
-        .map_err(|e| RefactorError::IoError(format!("无法创建输出文件: {}", e)))?;
-
-    let mut zip = ZipWriter::new(file);
-
-    // 首先添加 mimetype 文件（不压缩）
-    let options_mimetype =
-        FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
-    zip.start_file("mimetype", options_mimetype)
-        .map_err(|e| RefactorError::IoError(format!("无法添加 mimetype: {}", e)))?;
-    zip.write_all(b"application/epub+zip")
-        .map_err(|e| RefactorError::IoError(format!("无法写入 mimetype: {}", e)))?;
-
-    // 添加 META-INF/container.xml（使用默认压缩）
-    zip.start_file("META-INF/container.xml", FileOptions::<()>::default())
-        .map_err(|e| RefactorError::IoError(format!("无法添加 container.xml: {}", e)))?;
-    let container_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>
-"##;
-    zip.write_all(container_xml.as_bytes())
-        .map_err(|e| RefactorError::IoError(format!("无法写入 container.xml: {}", e)))?;
-
-    // 递归添加 OEBPS 目录下的所有文件
-    add_directory_to_zip(
-        &mut zip,
-        &Path::new(&refactored.storage_path).join("OEBPS"),
-        "OEBPS",
-    )?;
-
-    // 完成 ZIP 文件
-    zip.finish()
-        .map_err(|e| RefactorError::IoError(format!("无法完成 ZIP 文件: {}", e)))?;
-
-    Ok(output_path_str)
-}
-
 /// 递归添加目录到 ZIP
 fn add_directory_to_zip<W: Write + Seek>(
     zip: &mut ZipWriter<W>,

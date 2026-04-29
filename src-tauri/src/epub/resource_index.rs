@@ -6,6 +6,22 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
+
+static ATTR_DOUBLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(src|href|xlink:href)\s*=\s*"([^"]+)""#)
+        .expect("valid double-quoted attribute reference regex")
+});
+
+static ATTR_SINGLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(src|href|xlink:href)\s*=\s*'([^']+)'"#)
+        .expect("valid single-quoted attribute reference regex")
+});
+
+static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
+        .expect("valid CSS url reference regex")
+});
 
 pub fn refresh_resource_index(
     epub_id: &str,
@@ -47,15 +63,14 @@ pub fn build_resource_index(
     }
 
     let mut references = Vec::new();
-    let attr_double_re = Regex::new(r#"(src|href|xlink:href)\s*=\s*"([^"]+)""#)
-        .map_err(|e| RefactorError::ParseError(format!("资源引用规则无效: {}", e)))?;
-    let attr_single_re = Regex::new(r#"(src|href|xlink:href)\s*=\s*'([^']+)'"#)
-        .map_err(|e| RefactorError::ParseError(format!("资源引用规则无效: {}", e)))?;
-    let css_url_re = Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
-        .map_err(|e| RefactorError::ParseError(format!("CSS 引用规则无效: {}", e)))?;
+    let scan_sources = resources
+        .iter()
+        .filter(|item| should_scan(item))
+        .map(|item| item.path.clone())
+        .collect::<Vec<_>>();
 
-    for source in resources.clone().iter().filter(|item| should_scan(item)) {
-        let full_path = Path::new(storage_path).join(&source.path);
+    for source_path in scan_sources {
+        let full_path = Path::new(storage_path).join(&source_path);
         if !full_path.exists() {
             continue;
         }
@@ -66,25 +81,25 @@ pub fn build_resource_index(
         };
 
         collect_attribute_references(
-            &source.path,
+            &source_path,
             &content,
-            &attr_double_re,
+            &ATTR_DOUBLE_RE,
             &path_to_index,
             &mut resources,
             &mut references,
         );
         collect_attribute_references(
-            &source.path,
+            &source_path,
             &content,
-            &attr_single_re,
+            &ATTR_SINGLE_RE,
             &path_to_index,
             &mut resources,
             &mut references,
         );
         collect_css_url_references(
-            &source.path,
+            &source_path,
             &content,
-            &css_url_re,
+            &CSS_URL_RE,
             &path_to_index,
             &mut resources,
             &mut references,

@@ -5,7 +5,18 @@ use regex::Regex;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::LazyLock;
 use zip::ZipArchive;
+
+static ATTRIBUTE_REFERENCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
+        .expect("valid EPUB attribute reference regex")
+});
+
+static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
+        .expect("valid CSS url reference regex")
+});
 
 /// 从原始 EPUB 复制和整理文件到标准目录
 pub fn copy_and_organize_files(
@@ -191,7 +202,7 @@ fn update_file_references(
     let full_path = Path::new(storage_path).join(standard_path);
 
     // 读取文件内容
-    let mut content = fs::read_to_string(&full_path)
+    let content = fs::read_to_string(&full_path)
         .map_err(|e| RefactorError::IoError(format!("无法读取文件 {:?}: {}", full_path, e)))?;
 
     // 获取原始文件所在目录（用于解析引用）
@@ -201,11 +212,12 @@ fn update_file_references(
     let standard_dir = epub_path::parent(standard_path);
 
     // 重写资源路径
-    content = rewrite_resource_paths(&content, &original_dir, &standard_dir, file_map);
+    let rewritten = rewrite_resource_paths(&content, &original_dir, &standard_dir, file_map);
 
-    // 写回文件
-    fs::write(&full_path, content)
-        .map_err(|e| RefactorError::IoError(format!("无法写入文件 {:?}: {}", full_path, e)))?;
+    if rewritten != content {
+        fs::write(&full_path, rewritten)
+            .map_err(|e| RefactorError::IoError(format!("无法写入文件 {:?}: {}", full_path, e)))?;
+    }
 
     Ok(())
 }
@@ -217,11 +229,7 @@ fn rewrite_resource_paths(
     standard_dir: &str,
     file_map: &FileMap,
 ) -> String {
-    // 匹配 src="" 和 href="" 属性
-    let src_regex = Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
-        .unwrap_or_else(|_| Regex::new(r#"src="[^"]*""#).unwrap());
-
-    let result = src_regex.replace_all(content, |caps: &regex::Captures| {
+    let result = ATTRIBUTE_REFERENCE_RE.replace_all(content, |caps: &regex::Captures| {
         let attr_name = &caps[1];
         let original_ref = &caps[2];
 
@@ -243,10 +251,7 @@ fn rewrite_css_url_paths(
     standard_dir: &str,
     file_map: &FileMap,
 ) -> String {
-    let url_regex = Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
-        .unwrap_or_else(|_| Regex::new(r#"url\([^)]+\)"#).unwrap());
-
-    url_regex
+    CSS_URL_RE
         .replace_all(content, |caps: &regex::Captures| {
             let open_quote = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             let original_ref = caps.get(2).map(|m| m.as_str()).unwrap_or("");

@@ -6,10 +6,7 @@ use super::opf_builder::generate_content_opf;
 use super::parser::parse_epub;
 use super::resource_index;
 use super::resource_manager::{copy_and_organize_files, update_resource_references};
-use super::storage::{
-    create_standard_directories, get_epub_storage_path, save_refactored_epub,
-    save_workspace_metadata,
-};
+use super::storage::{create_standard_directories, get_epub_storage_path, save_workspace_metadata};
 use std::path::Path;
 
 /// 重构 EPUB 文件
@@ -76,9 +73,6 @@ pub fn refactor_epub(source_path: &str) -> Result<RefactoredEpub, RefactorError>
     };
     save_workspace_metadata(&storage_path, &workspace_metadata)?;
     resource_index::refresh_resource_index(&epub_id, &storage_path)?;
-
-    // 保存重构后的 EPUB
-    save_refactored_epub(&refactored, &epub_id)?;
 
     Ok(refactored)
 }

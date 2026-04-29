@@ -34,6 +34,7 @@ pub fn analyze_epub_structure(
 fn identify_chapters(parsed: &ParsedEpub) -> Result<Vec<ExtendedChapterInfo>, RefactorError> {
     let mut chapters = Vec::new();
     let mut seen_ids = HashSet::new();
+    let toc_titles = collect_toc_titles(parsed);
 
     for (order, itemref) in parsed.spine.itemrefs.iter().enumerate() {
         // 通过 idref 查找 manifest 中的项目
@@ -63,8 +64,9 @@ fn identify_chapters(parsed: &ParsedEpub) -> Result<Vec<ExtendedChapterInfo>, Re
         // 提取文件名
         let standard_path = epub_path::standard_path("Text", &manifest_item.href, &["Text"]);
 
-        // 尝试从 TOC 中获取标题
-        let title = extract_title_from_toc(parsed, &manifest_item.href);
+        let title = toc_titles
+            .get(&epub_path::normalize(&manifest_item.href))
+            .cloned();
 
         chapters.push(ExtendedChapterInfo {
             id: manifest_item.id.clone(),
@@ -116,31 +118,27 @@ fn is_navigation_file(item: &ManifestItem) -> bool {
     has_property(item, "nav")
 }
 
-/// 从 TOC 中提取章节标题
-fn extract_title_from_toc(parsed: &ParsedEpub, href: &str) -> Option<String> {
-    let toc = parsed.table_of_contents.as_ref()?;
+fn collect_toc_titles(parsed: &ParsedEpub) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
 
-    // 递归查找匹配的章节
-    find_title_in_nav_points(&toc.nav_points, href)
-}
-
-/// 在导航点中查找标题
-fn find_title_in_nav_points(nav_points: &[NavPoint], href: &str) -> Option<String> {
-    let normalized_href = epub_path::normalize(href);
-
-    for nav_point in nav_points {
-        // 检查当前导航点
-        if epub_path::normalize(&nav_point.content_src) == normalized_href {
-            return Some(nav_point.label.clone());
-        }
-
-        // 递归检查子导航点
-        if let Some(title) = find_title_in_nav_points(&nav_point.children, href) {
-            return Some(title);
-        }
+    if let Some(toc) = parsed.table_of_contents.as_ref() {
+        collect_toc_titles_recursive(&toc.nav_points, &mut titles);
     }
 
-    None
+    titles
+}
+
+fn collect_toc_titles_recursive(nav_points: &[NavPoint], titles: &mut HashMap<String, String>) {
+    for nav_point in nav_points {
+        let normalized_href = epub_path::normalize(&nav_point.content_src);
+        if !normalized_href.is_empty() {
+            titles
+                .entry(normalized_href)
+                .or_insert_with(|| nav_point.label.clone());
+        }
+
+        collect_toc_titles_recursive(&nav_point.children, titles);
+    }
 }
 
 /// 分类资源文件
@@ -394,9 +392,10 @@ mod tests {
             }),
         };
 
+        let titles = collect_toc_titles(&parsed);
         assert_eq!(
-            extract_title_from_toc(&parsed, "Text/chapter1.xhtml"),
-            Some("Chapter 1".to_string())
+            titles.get("Text/chapter1.xhtml"),
+            Some(&"Chapter 1".to_string())
         );
     }
 

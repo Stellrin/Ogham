@@ -42,6 +42,83 @@ const convertChaptersToToc = (chapters: CombinedChapter[]): TocChapter[] => {
   });
 };
 
+const sortChaptersByOrder = (chapters: CombinedChapter[]): CombinedChapter[] => {
+  return [...chapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+};
+
+const flattenTocEntries = (entries: TocChapter[]): TocChapter[] => {
+  return entries.flatMap((entry) => [entry, ...flattenTocEntries(entry.children)]);
+};
+
+const findChapterIndexForTocEntry = (
+  entry: TocChapter,
+  orderedChapters: CombinedChapter[]
+): number => {
+  const lookupHref = entry.filePath || entry.contentSrc;
+  if (!lookupHref) return -1;
+
+  const chapter = findChapterByHref(lookupHref, orderedChapters);
+  if (!chapter) return -1;
+
+  const chapterPath = getChapterPath(chapter);
+  return orderedChapters.findIndex((candidate) => getChapterPath(candidate) === chapterPath);
+};
+
+const attachSpineFileGroupsToToc = (
+  entries: TocChapter[],
+  chapters: CombinedChapter[]
+): TocChapter[] => {
+  if (entries.length === 0 || chapters.length === 0) {
+    return entries;
+  }
+
+  const orderedChapters = sortChaptersByOrder(chapters);
+  const flatEntries = flattenTocEntries(entries);
+  const targetIndexByEntryId = new Map<string, number>();
+
+  for (const entry of flatEntries) {
+    const targetIndex = findChapterIndexForTocEntry(entry, orderedChapters);
+    if (targetIndex >= 0) {
+      targetIndexByEntryId.set(entry.id, targetIndex);
+    }
+  }
+
+  const tocTargetIndices = Array.from(new Set(targetIndexByEntryId.values())).sort(
+    (a, b) => a - b
+  );
+
+  const filePathsByEntryId = new Map<string, string[]>();
+  for (const [entryId, targetIndex] of targetIndexByEntryId) {
+    const nextTargetIndex =
+      tocTargetIndices.find((candidateIndex) => candidateIndex > targetIndex) ??
+      orderedChapters.length;
+    const filePaths = orderedChapters
+      .slice(targetIndex, nextTargetIndex)
+      .map((chapter) => getChapterPath(chapter));
+
+    if (filePaths.length > 0) {
+      filePathsByEntryId.set(entryId, filePaths);
+    }
+  }
+
+  const attach = (tocItems: TocChapter[]): TocChapter[] => {
+    return tocItems.map((entry) => {
+      const existingFilePaths = entry.filePaths?.filter(Boolean) || [];
+      const filePaths = filePathsByEntryId.get(entry.id) || existingFilePaths;
+      const primaryFilePath = filePaths[0] || entry.filePath;
+
+      return {
+        ...entry,
+        filePath: primaryFilePath,
+        filePaths: filePaths.length > 0 ? filePaths : undefined,
+        children: attach(entry.children),
+      };
+    });
+  };
+
+  return attach(entries);
+};
+
 export const EpubStructureTree: React.FC = () => {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['text']));
 
@@ -156,6 +233,15 @@ export const EpubStructureTree: React.FC = () => {
     );
   };
 
+  const baseTocEntries =
+    tocEntries && tocEntries.length > 0
+      ? tocEntries
+      : managedStructure.navigation?.length > 0
+        ? convertNavigationToToc(managedStructure.navigation, allChapters)
+        : convertChaptersToToc(allChapters);
+
+  const tocTreeEntries = attachSpineFileGroupsToToc(baseTocEntries, allChapters);
+
   return (
     <div className="structure-tree">
       <div className="structure-header">
@@ -182,16 +268,7 @@ export const EpubStructureTree: React.FC = () => {
       {/* 根据视图模式显示不同内容 */}
       {viewMode === 'toc' ? (
         <div className="toc-view-container">
-          <TocTreeView
-            entries={
-              // 优先使用 tocEntries（由 loadTocEntries 加载的最新数据），否则使用 navigation
-              tocEntries && tocEntries.length > 0
-                ? tocEntries
-                : managedStructure.navigation?.length > 0
-                  ? convertNavigationToToc(managedStructure.navigation, allChapters)
-                  : convertChaptersToToc(allChapters)
-            }
-          />
+          <TocTreeView entries={tocTreeEntries} />
         </div>
       ) : (
       <div className="structure-content">

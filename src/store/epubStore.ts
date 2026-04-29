@@ -102,6 +102,7 @@ export interface TocChapter {
   label: string;
   contentSrc: string;
   filePath?: string;
+  filePaths?: string[];
   level: number;
   order: number;
   children: TocChapter[];
@@ -115,6 +116,8 @@ interface BackendTocChapter {
   contentSrc?: string;
   file_path?: string;
   filePath?: string;
+  file_paths?: string[];
+  filePaths?: string[];
   level: number;
   order: number;
   children: BackendTocChapter[];
@@ -152,6 +155,18 @@ interface BackendRefactoredEpubResult {
   metadata: EpubMetadata;
   structure: StandardEpubStructure;
   storage_path: string;
+}
+
+interface BackendEpubInfo {
+  id: string;
+  name: string;
+  path: string;
+  loaded_at: number;
+  loadedAt?: number;
+  epub_id?: string;
+  epubId?: string;
+  refactored_structure?: BackendRefactoredEpubResult;
+  refactoredStructure?: RefactoredEpubStructure;
 }
 
 interface ImageProcessFailure {
@@ -221,6 +236,7 @@ interface EpubStore {
   dismissNotification: (id: string) => void;
   clearNotifications: () => void;
 
+  importEpubFromPath: (filePath: string) => Promise<EpubFile>;
   addEpub: (file: EpubFile) => void;
   removeEpub: (id: string) => void;
   selectEpub: (id: string) => Promise<void>;
@@ -281,12 +297,55 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function getFileName(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function normalizeFilePathForCompare(filePath: string): string {
+  return filePath.replace(/\\/g, '/').toLowerCase();
+}
+
+function normalizeImportedEpub(info: BackendEpubInfo): EpubFile {
+  const backendRefactored = info.refactoredStructure || info.refactored_structure;
+  const refactoredStructure = normalizeRefactoredStructure(backendRefactored);
+  const epubId = info.epubId || info.epub_id || refactoredStructure?.epubId || info.id;
+
+  return {
+    id: info.id,
+    name: info.name,
+    path: info.path,
+    loadedAt: info.loadedAt || info.loaded_at,
+    epubId,
+    refactoredStructure,
+  };
+}
+
+function normalizeRefactoredStructure(
+  refactored?: BackendRefactoredEpubResult | RefactoredEpubStructure
+): RefactoredEpubStructure | undefined {
+  if (!refactored) return undefined;
+
+  if ('epubId' in refactored) {
+    return refactored;
+  }
+
+  return {
+    epubId: refactored.epub_id,
+    metadata: refactored.metadata,
+    structure: refactored.structure,
+    storagePath: refactored.storage_path,
+  };
+}
+
 function normalizeTocChapter(entry: BackendTocChapter): TocChapter {
+  const filePaths = entry.filePaths || entry.file_paths;
+
   return {
     id: entry.id,
     label: entry.label,
     contentSrc: entry.contentSrc || entry.content_src || '',
     filePath: entry.filePath || entry.file_path,
+    filePaths,
     level: entry.level,
     order: entry.order,
     children: (entry.children || []).map(normalizeTocChapter),
@@ -355,6 +414,49 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
     })),
 
   clearNotifications: () => set({ notifications: [] }),
+
+  importEpubFromPath: async (filePath: string) => {
+    const normalizedPath = normalizeFilePathForCompare(filePath);
+    const existing = get().epubs.find(
+      (epub) => normalizeFilePathForCompare(epub.path) === normalizedPath
+    );
+
+    if (existing) {
+      await get().selectEpub(existing.id);
+      get().addNotification({
+        kind: 'info',
+        title: 'EPUB 已在列表中',
+        message: existing.name,
+      });
+      return existing;
+    }
+
+    try {
+      const result = await invoke<BackendEpubInfo>('import_epub_command', {
+        filePath,
+      });
+
+      const importedEpub = normalizeImportedEpub(result);
+      get().addEpub(importedEpub);
+      await get().selectEpub(importedEpub.id);
+      get().addNotification({
+        kind: 'success',
+        title: '导入完成',
+        message: importedEpub.name,
+      });
+
+      return importedEpub;
+    } catch (error) {
+      get().addNotification({
+        kind: 'error',
+        title: 'EPUB 打开失败',
+        message: getFileName(filePath),
+        details: getErrorMessage(error),
+        timeoutMs: 0,
+      });
+      throw error;
+    }
+  },
 
   addEpub: (file) =>
     set((state) => {

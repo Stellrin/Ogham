@@ -1175,7 +1175,13 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
 
           const total = payload.total_unique_images || 0;
           const processed = payload.processed_unique_images || 0;
-          const progress = total > 0 ? Math.round((processed / total) * 100) : 0;
+          const totalChapters = payload.total_chapters || 0;
+          const currentChapter = payload.current_chapter_index || 0;
+          const imageProgress = total > 0 ? Math.round((processed / total) * 100) : 0;
+          const chapterProgress = totalChapters > 0
+            ? Math.round((currentChapter / totalChapters) * 100)
+            : 0;
+          const progress = total > 0 ? imageProgress : chapterProgress;
 
           return {
             imageProcessingTaskId: payload.task_id,
@@ -1213,10 +1219,13 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
       });
 
       // 清除章节缓存，确保下次加载获取最新内容
-      get().clearChapterCache(epub.id);
+      const didUpdateContent = result.inserted_images > 0;
+      if (didUpdateContent) {
+        get().clearChapterCache(epub.id);
 
-      // 重新加载 EPUB 结构以更新文件视图（包括新增图片，直接从缓存读取）
-      await get().reloadEpubStructure(epub.id);
+        // 重新加载 EPUB 结构以更新文件视图（包括新增图片，直接从缓存读取）
+        await get().reloadEpubStructure(epub.id);
+      }
 
       // 先清理状态，避免阻塞 UI 更新
       set({
@@ -1235,8 +1244,12 @@ export const useEpubStore = create<EpubStore>((set, get) => ({
         .join('\n');
 
       get().addNotification({
-        kind: result.failed_images > 0 ? 'warning' : 'success',
-        title: result.failed_images > 0 ? '图片处理完成，但有失败项' : '图片处理完成',
+        kind: result.failed_images > 0 ? 'warning' : result.detected_unique_urls === 0 ? 'info' : 'success',
+        title: result.failed_images > 0
+          ? '图片处理完成，但有失败项'
+          : result.detected_unique_urls === 0
+            ? '没有发现待处理图片链接'
+            : '图片处理完成',
         message: summary,
         details: failureDetails || undefined,
         timeoutMs: result.failed_images > 0 ? 0 : undefined,

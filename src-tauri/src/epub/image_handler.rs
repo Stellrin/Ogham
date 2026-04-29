@@ -8,12 +8,15 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 /// 下载图片并返回二进制内容和 MIME 类型
 pub fn download_image(url: &str) -> Result<(Vec<u8>, String), RefactorError> {
     // 使用带请求头的 client
     let client = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(45))
         .build()
         .map_err(|e| RefactorError::IoError(format!("创建 HTTP 客户端失败: {}", e)))?;
 
@@ -46,7 +49,14 @@ pub fn download_image(url: &str) -> Result<(Vec<u8>, String), RefactorError> {
 
 /// 根据 MIME 类型获取文件扩展名
 fn get_extension_from_mime(mime: &str) -> String {
-    match mime {
+    let normalized = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
+
+    match normalized.as_str() {
         "image/jpeg" | "image/jpg" => "jpg",
         "image/png" => "png",
         "image/gif" => "gif",
@@ -61,6 +71,37 @@ fn is_chapter_href(href: &str) -> bool {
     let normalized = epub_path::normalize(href).to_lowercase();
     (normalized.starts_with("text/") || normalized.contains("/text/"))
         && (normalized.ends_with(".xhtml") || normalized.ends_with(".html"))
+}
+
+fn image_link_regex() -> Result<Regex, RefactorError> {
+    Regex::new(
+        r#"(?is)<p(?:\s+[^>]*)?>\s*(?:&lt;\s*图片\s*&gt;|<\s*图片\s*>|＜\s*图片\s*＞)\s*(https?://[^\s<]+)\s*</p>"#,
+    )
+    .map_err(|e| RefactorError::IoError(format!("图片匹配规则初始化失败: {}", e)))
+}
+
+fn normalize_image_url(raw_url: &str) -> String {
+    raw_url.trim().replace("&amp;", "&").replace("&#38;", "&")
+}
+
+fn collect_image_link_matches(content: &str, image_link_re: &Regex) -> Vec<(String, String)> {
+    image_link_re
+        .captures_iter(content)
+        .filter_map(|caps| {
+            let matched = caps.get(0)?.as_str().to_string();
+            let url = normalize_image_url(caps.get(1)?.as_str());
+            if url.is_empty() {
+                None
+            } else {
+                Some((matched, url))
+            }
+        })
+        .collect()
+}
+
+fn chapter_relative_image_src(chapter_path: &str, image_path_in_zip: &str) -> String {
+    let chapter_dir = epub_path::parent(chapter_path);
+    epub_path::relative_path(&chapter_dir, image_path_in_zip)
 }
 
 /// 添加图片到 OPF manifest
@@ -204,8 +245,7 @@ where
 {
     let storage_path = get_epub_storage_path(epub_id);
     let chapter_files = collect_chapters_by_spine(&storage_path)?;
-    let image_link_re = Regex::new(r"<p>&lt;图片&gt;(https?://[^<]+)</p>")
-        .map_err(|e| RefactorError::IoError(format!("图片匹配规则初始化失败: {}", e)))?;
+    let image_link_re = image_link_regex()?;
 
     let total_chapters = chapter_files.len() as u32;
     let mut chapter_contents: Vec<(String, String, Vec<(String, String)>)> = Vec::new();
@@ -218,21 +258,46 @@ where
             RefactorError::IoError(format!("无法读取章节文件 {}: {}", chapter_path, e))
         })?;
 
-        let mut matches = Vec::new();
-        for caps in image_link_re.captures_iter(&content) {
-            let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-            let url = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-            if !matched.is_empty() && !url.is_empty() {
-                matches.push((matched, url.clone()));
-                detected_raw_matches += 1;
-                unique_urls.insert(url);
-            }
+        let matches = collect_image_link_matches(&content, &image_link_re);
+        for (_, url) in &matches {
+            detected_raw_matches += 1;
+            unique_urls.insert(url.clone());
         }
 
         chapter_contents.push((chapter_path.clone(), content, matches));
     }
 
     let total_unique_images = unique_urls.len() as u32;
+    if total_unique_images == 0 {
+        emit_progress(
+            &mut progress_callback,
+            task_id,
+            String::new(),
+            total_chapters,
+            total_chapters,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "no_matches",
+            "没有发现待处理图片链接",
+        );
+
+        return Ok(ImageProcessResult {
+            task_id: task_id.to_string(),
+            total_chapters,
+            processed_chapters: total_chapters,
+            detected_raw_matches,
+            detected_unique_urls: 0,
+            successful_images: 0,
+            failed_images: 0,
+            skipped_duplicates: 0,
+            inserted_images: 0,
+            failures: Vec::new(),
+        });
+    }
 
     let images_dir = Path::new(&storage_path).join("OEBPS/Images");
     fs::create_dir_all(&images_dir)?;
@@ -271,7 +336,8 @@ where
 
         for (matched_str, url) in matches {
             if let Some(existing_path) = url_to_local_path.get(&url) {
-                let img_tag = format!("<p><img src=\"{}\" alt=\"图片\" /></p>", existing_path);
+                let image_src = chapter_relative_image_src(&chapter_path, existing_path);
+                let img_tag = format!("<p><img src=\"{}\" alt=\"图片\" /></p>", image_src);
                 new_content = new_content.replacen(&matched_str, &img_tag, 1);
                 skipped_duplicates += 1;
                 inserted_images += 1;
@@ -327,8 +393,8 @@ where
 
                     add_image_to_manifest(&storage_path, &image_filename, &mime_type)?;
 
-                    let img_tag =
-                        format!("<p><img src=\"{}\" alt=\"图片\" /></p>", image_path_in_zip);
+                    let image_src = chapter_relative_image_src(&chapter_path, &image_path_in_zip);
+                    let img_tag = format!("<p><img src=\"{}\" alt=\"图片\" /></p>", image_src);
                     new_content = new_content.replacen(&matched_str, &img_tag, 1);
 
                     url_to_local_path.insert(url.clone(), image_path_in_zip);
@@ -420,4 +486,86 @@ where
         inserted_images,
         failures,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn image_link_matcher_accepts_common_placeholder_shapes() -> Result<(), RefactorError> {
+        let regex = image_link_regex()?;
+        let content = r#"
+            <p class="illustration">&lt;图片&gt;https://example.com/a.jpg?x=1&amp;y=2</p>
+            <p>＜ 图片 ＞ https://example.com/b.png</p>
+        "#;
+
+        let matches = collect_image_link_matches(content, &regex);
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].1, "https://example.com/a.jpg?x=1&y=2");
+        assert_eq!(matches[1].1, "https://example.com/b.png");
+        Ok(())
+    }
+
+    #[test]
+    fn downloaded_image_src_is_relative_to_chapter() {
+        assert_eq!(
+            chapter_relative_image_src("OEBPS/Text/chapter.xhtml", "OEBPS/Images/image_000001.jpg"),
+            "../Images/image_000001.jpg"
+        );
+    }
+
+    #[test]
+    fn no_matches_finishes_without_resource_refresh() -> Result<(), RefactorError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let epub_id = format!("image-handler-no-matches-{}", timestamp);
+        let storage_path = get_epub_storage_path(&epub_id);
+        let root = Path::new(&storage_path);
+        if root.exists() {
+            fs::remove_dir_all(root)?;
+        }
+
+        fs::create_dir_all(root.join("OEBPS/Text"))?;
+        fs::write(
+            root.join("OEBPS/content.opf"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="pub-id">no-matches</dc:identifier>
+    <dc:title>No Matches</dc:title>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="Text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>"#,
+        )?;
+        fs::write(
+            root.join("OEBPS/Text/chapter1.xhtml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>没有远程图片链接</p></body></html>"#,
+        )?;
+
+        let mut events = Vec::new();
+        let result = process_all_images(&epub_id, "test-task", |progress| events.push(progress))?;
+
+        assert_eq!(result.total_chapters, 1);
+        assert_eq!(result.processed_chapters, 1);
+        assert_eq!(result.detected_raw_matches, 0);
+        assert_eq!(result.detected_unique_urls, 0);
+        assert_eq!(result.inserted_images, 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].stage, "no_matches");
+        assert!(!root.join(".ogham/resource_index.json").exists());
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

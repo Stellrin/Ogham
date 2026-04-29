@@ -16,7 +16,7 @@ pub fn refactor_epub(source_path: &str) -> Result<RefactoredEpub, RefactorError>
         .map_err(|e| RefactorError::ParseError(format!("解析 EPUB 失败: {}", e)))?;
 
     // 分析 EPUB 结构
-    let analysis = analyze_epub_structure(&parsed, &opf_path)?;
+    let analysis = analyze_epub_structure(&parsed, &opf_path, source_path)?;
 
     // 生成唯一 ID
     let epub_id = generate_epub_id(&parsed.metadata);
@@ -599,6 +599,41 @@ mod tests {
     }
 
     #[test]
+    fn refactor_copies_images_referenced_outside_manifest() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture_path = std::env::temp_dir().join(format!(
+            "ogham-unmanifested-image-{}.epub",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        create_unmanifested_image_epub(&fixture_path)?;
+
+        let fixture_path_str = fixture_path.to_string_lossy().to_string();
+        let refactored = refactor_epub(&fixture_path_str)?;
+        let storage_path = std::path::Path::new(&refactored.storage_path);
+        let copied_image = storage_path.join("OEBPS/Images/pic.jpg");
+        let rewritten_chapter = fs::read_to_string(storage_path.join("OEBPS/Text/chapter.xhtml"))?;
+
+        assert!(copied_image.exists());
+        assert!(refactored
+            .manifest
+            .items
+            .iter()
+            .any(|item| item.href == "Images/pic.jpg" && item.media_type == "image/jpeg"));
+        assert!(rewritten_chapter.contains("src=\"../Images/pic.jpg\""));
+
+        let refactored_zip = std::env::temp_dir()
+            .join("ogham-library")
+            .join(format!("{}_refactored.epub", refactored.epub_id));
+        let _ = fs::remove_file(refactored_zip);
+        let _ = fs::remove_dir_all(&refactored.storage_path);
+        let _ = fs::remove_file(fixture_path);
+
+        Ok(())
+    }
+
+    #[test]
     fn refactor_decodes_percent_encoded_manifest_hrefs() -> Result<(), Box<dyn std::error::Error>> {
         let fixture_path = std::env::temp_dir().join(format!(
             "ogham-percent-encoded-{}.epub",
@@ -694,6 +729,79 @@ mod tests {
     <navPoint id="navPoint-1" playOrder="1">
       <navLabel><text>Character Profile</text></navLabel>
       <content src="Text/Character%20Profile1.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>"#,
+        )?;
+
+        zip.finish()?;
+        Ok(())
+    }
+
+    fn create_unmanifested_image_epub(
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::create(path)?;
+        let mut zip = ZipWriter::new(file);
+
+        zip.start_file(
+            "mimetype",
+            FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored),
+        )?;
+        zip.write_all(b"application/epub+zip")?;
+
+        zip.start_file("META-INF/container.xml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+        )?;
+
+        zip.start_file("OEBPS/content.opf", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Unmanifested Image Fixture</dc:title>
+    <dc:identifier id="BookId">unmanifested-image-fixture</dc:identifier>
+  </metadata>
+  <manifest>
+    <item href="toc.ncx" id="ncx" media-type="application/x-dtbncx+xml" />
+    <item href="Text/chapter.xhtml" id="chapter" media-type="application/xhtml+xml" />
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter" />
+  </spine>
+</package>"#,
+        )?;
+
+        zip.start_file("OEBPS/Text/chapter.xhtml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Chapter</title></head>
+  <body><p><img src="../images/pic.jpg" alt="pic" /></p></body>
+</html>"#,
+        )?;
+
+        zip.start_file("OEBPS/images/pic.jpg", FileOptions::<()>::default())?;
+        zip.write_all(b"fake-jpeg")?;
+
+        zip.start_file("OEBPS/toc.ncx", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta content="unmanifested-image-fixture" name="dtb:uid"/>
+  </head>
+  <docTitle><text>Unmanifested Image Fixture</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>Chapter</text></navLabel>
+      <content src="Text/chapter.xhtml"/>
     </navPoint>
   </navMap>
 </ncx>"#,

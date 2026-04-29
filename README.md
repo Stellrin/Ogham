@@ -80,13 +80,6 @@ src-tauri/
   tauri.conf.json    Tauri 应用配置
 ```
 
-## 开发注意事项
-
-- 这是 Tauri 桌面应用，涉及文件系统、对话框和 Rust command 的功能应优先在 `npm run tauri dev` 中验证。
-- 前端主要操作标准化后的 `epubId` 和 `refactoredStructure`，不要混用原始 EPUB 路径与管理目录路径。
-- 修改章节、目录、图片、OPF 或资源后，需要重新加载 EPUB 结构，保证前端显示的是管理目录中的最新状态。
-- EPUB 内部资源路径必须保持相对关系正确，尤其是 `Text/`、`Styles/`、`Images/`、`Fonts/` 之间的引用。
-
 ## 许可证
 
 本项目采用 MIT License，详见 [LICENSE](LICENSE)。

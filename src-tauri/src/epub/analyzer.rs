@@ -1,17 +1,34 @@
 use super::epub_path;
 use super::models::*;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::sync::LazyLock;
+use zip::ZipArchive;
+
+static ATTRIBUTE_REFERENCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(src|href|xlink:href)="([^"]+)""#).expect("valid EPUB attribute reference regex")
+});
+
+static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#).expect("valid CSS url reference regex")
+});
 
 /// 分析 EPUB 结构
 pub fn analyze_epub_structure(
     parsed: &ParsedEpub,
-    _opf_path: &str,
+    opf_path: &str,
+    source_path: &str,
 ) -> Result<EpubStructureAnalysis, RefactorError> {
     // 识别章节文件（从 spine）
     let mut chapters = identify_chapters(parsed)?;
 
     // 分类资源文件
     let mut resources = categorize_resources(parsed, &chapters)?;
+
+    discover_unmanifested_resources(source_path, opf_path, &chapters, &mut resources)?;
 
     // 识别特殊文件
     let special_files = identify_special_files(parsed)?;
@@ -196,6 +213,337 @@ fn categorize_resources(
         fonts,
         misc,
     })
+}
+
+fn discover_unmanifested_resources(
+    source_path: &str,
+    opf_path: &str,
+    chapters: &[ExtendedChapterInfo],
+    resources: &mut ResourceCollection,
+) -> Result<(), RefactorError> {
+    let file = File::open(source_path)
+        .map_err(|e| RefactorError::IoError(format!("无法打开源文件: {}", e)))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| RefactorError::ParseError(format!("无法打开 ZIP 归档: {}", e)))?;
+
+    let (available_entries, available_entries_casefold) = collect_zip_entries(&mut archive)?;
+    let opf_dir = epub_path::parent(opf_path);
+    let mut known_paths = collect_known_original_paths(chapters, resources);
+    let mut used_ids = collect_known_ids(chapters, resources);
+    let mut scan_queue = collect_scan_queue(chapters, resources);
+    let mut scanned_paths = HashSet::new();
+
+    while let Some(source_file_path) = scan_queue.pop() {
+        let source_file_path = match find_zip_entry(
+            &source_file_path,
+            &opf_dir,
+            &available_entries,
+            &available_entries_casefold,
+        ) {
+            Some(path) => path,
+            None => continue,
+        };
+
+        if !scanned_paths.insert(epub_path::casefold(&source_file_path)) {
+            continue;
+        }
+
+        let Some(content) = read_zip_text(&mut archive, &source_file_path)? else {
+            continue;
+        };
+
+        let source_dir = epub_path::parent(&source_file_path);
+        for reference in collect_resource_references(&content) {
+            if epub_path::should_skip_reference(&reference) {
+                continue;
+            }
+
+            let (path_part, _) = epub_path::split_reference_suffix(&reference);
+            if path_part.trim().is_empty() {
+                continue;
+            }
+
+            let resolved_path = epub_path::resolve_relative(&source_dir, path_part);
+            let Some(actual_path) = find_zip_entry(
+                &resolved_path,
+                &opf_dir,
+                &available_entries,
+                &available_entries_casefold,
+            )
+            .or_else(|| {
+                find_zip_entry(
+                    path_part,
+                    &opf_dir,
+                    &available_entries,
+                    &available_entries_casefold,
+                )
+            }) else {
+                continue;
+            };
+
+            let known_key = epub_path::casefold(&actual_path);
+            if known_paths.contains(&known_key) {
+                continue;
+            }
+
+            let media_type = infer_media_type(&actual_path);
+            let standard_path = classify_resource_path(&media_type, &actual_path);
+            let id = make_unique_inferred_id(&actual_path, &mut used_ids);
+
+            let resource_file = ResourceFile {
+                id,
+                original_path: actual_path.clone(),
+                standard_path,
+                media_type: media_type.clone(),
+            };
+
+            match classify_resource_type(&media_type) {
+                ResourceType::Style => resources.styles.push(resource_file),
+                ResourceType::Image => resources.images.push(resource_file),
+                ResourceType::Font => resources.fonts.push(resource_file),
+                ResourceType::Misc => resources.misc.push(resource_file),
+            }
+
+            known_paths.insert(known_key);
+            if epub_path::is_text_like_file(&actual_path) {
+                scan_queue.push(actual_path);
+            }
+        }
+    }
+
+    sort_resources(resources);
+    Ok(())
+}
+
+fn collect_zip_entries(
+    archive: &mut ZipArchive<File>,
+) -> Result<(HashMap<String, String>, HashMap<String, String>), RefactorError> {
+    let mut entries = HashMap::new();
+    let mut entries_casefold = HashMap::new();
+
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|e| RefactorError::ParseError(format!("无法读取 ZIP 条目: {}", e)))?;
+        if entry.is_dir() {
+            continue;
+        }
+
+        let actual_path = epub_path::normalize(entry.name());
+        entries
+            .entry(actual_path.clone())
+            .or_insert_with(|| entry.name().replace('\\', "/"));
+        entries_casefold
+            .entry(epub_path::casefold(&actual_path))
+            .or_insert_with(|| entry.name().replace('\\', "/"));
+    }
+
+    Ok((entries, entries_casefold))
+}
+
+fn collect_known_original_paths(
+    chapters: &[ExtendedChapterInfo],
+    resources: &ResourceCollection,
+) -> HashSet<String> {
+    let mut paths = HashSet::new();
+
+    for chapter in chapters {
+        paths.insert(epub_path::casefold(&chapter.original_path));
+    }
+
+    for resource in resources.styles.iter().chain(
+        resources
+            .images
+            .iter()
+            .chain(resources.fonts.iter().chain(resources.misc.iter())),
+    ) {
+        paths.insert(epub_path::casefold(&resource.original_path));
+    }
+
+    paths
+}
+
+fn collect_known_ids(
+    chapters: &[ExtendedChapterInfo],
+    resources: &ResourceCollection,
+) -> HashSet<String> {
+    let mut ids = HashSet::new();
+
+    for chapter in chapters {
+        ids.insert(chapter.id.clone());
+    }
+
+    for resource in resources.styles.iter().chain(
+        resources
+            .images
+            .iter()
+            .chain(resources.fonts.iter().chain(resources.misc.iter())),
+    ) {
+        ids.insert(resource.id.clone());
+    }
+
+    ids
+}
+
+fn collect_scan_queue(
+    chapters: &[ExtendedChapterInfo],
+    resources: &ResourceCollection,
+) -> Vec<String> {
+    let mut scan_queue = Vec::new();
+
+    for chapter in chapters.iter().rev() {
+        scan_queue.push(chapter.original_path.clone());
+    }
+
+    for resource in resources.styles.iter().rev() {
+        scan_queue.push(resource.original_path.clone());
+    }
+
+    scan_queue
+}
+
+fn collect_resource_references(content: &str) -> Vec<String> {
+    let mut references = Vec::new();
+
+    for captures in ATTRIBUTE_REFERENCE_RE.captures_iter(content) {
+        if let Some(reference) = captures.get(2) {
+            references.push(reference.as_str().trim().to_string());
+        }
+    }
+
+    for captures in CSS_URL_RE.captures_iter(content) {
+        if let Some(reference) = captures.get(2) {
+            references.push(reference.as_str().trim().to_string());
+        }
+    }
+
+    references
+}
+
+fn find_zip_entry(
+    path: &str,
+    opf_dir: &str,
+    available_entries: &HashMap<String, String>,
+    available_entries_casefold: &HashMap<String, String>,
+) -> Option<String> {
+    let mut candidates = vec![epub_path::normalize(path)];
+
+    if !opf_dir.is_empty() {
+        let normalized = epub_path::normalize(path);
+        if !normalized.starts_with(&format!("{}/", opf_dir)) {
+            candidates.push(epub_path::normalize(&format!("{}/{}", opf_dir, normalized)));
+        }
+    }
+
+    for candidate in candidates {
+        if let Some(actual_path) = available_entries.get(&candidate) {
+            return Some(actual_path.clone());
+        }
+
+        if let Some(actual_path) = available_entries_casefold.get(&epub_path::casefold(&candidate))
+        {
+            return Some(actual_path.clone());
+        }
+    }
+
+    None
+}
+
+fn read_zip_text(
+    archive: &mut ZipArchive<File>,
+    path: &str,
+) -> Result<Option<String>, RefactorError> {
+    let mut source_file = match archive.by_name(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+
+    let mut buffer = Vec::new();
+    source_file
+        .read_to_end(&mut buffer)
+        .map_err(|e| RefactorError::IoError(format!("无法读取文件 {}: {}", path, e)))?;
+
+    Ok(String::from_utf8(buffer).ok())
+}
+
+fn infer_media_type(path: &str) -> String {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match extension.as_str() {
+        "css" => "text/css",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "xhtml" | "html" => "application/xhtml+xml",
+        "xml" => "application/xml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+fn make_unique_inferred_id(path: &str, used_ids: &mut HashSet<String>) -> String {
+    let filename = epub_path::filename(path);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&filename);
+    let base = sanitize_resource_id(&format!("inferred_{}", stem));
+    let mut candidate = base.clone();
+    let mut suffix = 1usize;
+
+    while used_ids.contains(&candidate) {
+        candidate = format!("{}_{}", base, suffix);
+        suffix += 1;
+    }
+
+    used_ids.insert(candidate.clone());
+    candidate
+}
+
+fn sanitize_resource_id(value: &str) -> String {
+    let id = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+
+    if id.is_empty() {
+        "inferred_item".to_string()
+    } else {
+        id
+    }
+}
+
+fn sort_resources(resources: &mut ResourceCollection) {
+    resources
+        .styles
+        .sort_by(|a, b| a.original_path.cmp(&b.original_path));
+    resources
+        .images
+        .sort_by(|a, b| a.original_path.cmp(&b.original_path));
+    resources
+        .fonts
+        .sort_by(|a, b| a.original_path.cmp(&b.original_path));
+    resources
+        .misc
+        .sort_by(|a, b| a.original_path.cmp(&b.original_path));
 }
 
 /// 资源类型枚举

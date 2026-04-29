@@ -9,13 +9,11 @@ use std::sync::LazyLock;
 use zip::ZipArchive;
 
 static ATTRIBUTE_REFERENCE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(src|href|xlink:href)="([^"]+)""#)
-        .expect("valid EPUB attribute reference regex")
+    Regex::new(r#"(src|href|xlink:href)="([^"]+)""#).expect("valid EPUB attribute reference regex")
 });
 
 static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
-        .expect("valid CSS url reference regex")
+    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#).expect("valid CSS url reference regex")
 });
 
 /// 从原始 EPUB 复制和整理文件到标准目录
@@ -323,6 +321,15 @@ fn find_standard_path(path: &str, file_map: &FileMap) -> Option<String> {
     // 尝试添加 OEBPS/ 前缀
     let with_prefix = format!("OEBPS/{}", normalized_path.trim_start_matches('/'));
     if let Some(std_path) = file_map.original_to_standard.get(&with_prefix) {
+        return Some(std_path.clone());
+    }
+
+    let folded_path = epub_path::casefold(&normalized_path);
+    if let Some((_, std_path)) = file_map
+        .original_to_standard
+        .iter()
+        .find(|(original_path, _)| epub_path::casefold(original_path) == folded_path)
+    {
         return Some(std_path.clone());
     }
 

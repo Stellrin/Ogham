@@ -19,8 +19,7 @@ static ATTR_SINGLE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#)
-        .expect("valid CSS url reference regex")
+    Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#).expect("valid CSS url reference regex")
 });
 
 pub fn refresh_resource_index(

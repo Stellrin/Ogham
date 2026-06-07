@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { BookOpen } from 'lucide-react';
 import { ImportButton } from './components/ImportButton';
 import { EpubList } from './components/EpubList';
 import { EpubStructureTree } from './components/EpubStructureTree';
@@ -141,43 +142,63 @@ function App() {
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
   const canRunTools = Boolean(selectedEpub?.refactoredStructure);
+  const headerTitle = selectedEpub?.name || 'Ogham';
+  const headerSubtitle = selectedEpub ? '当前选中 EPUB' : '选择或导入一本 EPUB';
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>Ogham</h1>
-        <span className="app-subtitle">EPUB 小说管理器</span>
-      </header>
-
-      <main className="app-main">
-        <aside className="app-sidebar">
+      <aside className="app-sidebar">
+        <div className="sidebar-section">
+          <div className="sidebar-section-title">书库</div>
           <EpubList />
-          <EpubStructureTree />
-          <div className="sidebar-footer">
-            <ImportButton />
-          </div>
-        </aside>
+        </div>
 
-        <section className="app-content">
-          <Toolbar
-            onConvert={handleConversion}
-            isConverting={isConverting}
-            conversionProgress={conversionProgress}
-            onProcessAllImages={handleProcessAllImages}
-            isProcessingImages={isProcessingImages}
-            canRunTools={canRunTools}
-            imageProcessingProgress={imageProcessingProgress}
-            imageProcessingTotal={imageProcessingTotal}
-            imageProcessingCurrentChapter={imageProcessingCurrentChapter}
-            imageProcessingCurrentImageUrl={imageProcessingCurrentImageUrl}
-            imageProcessingSuccess={imageProcessingSuccess}
-            imageProcessingFailed={imageProcessingFailed}
-            imageProcessingSkipped={imageProcessingSkipped}
-            imageProcessingProcessedUnique={imageProcessingProcessedUnique}
-          />
-          <EpubReader />
-        </section>
-      </main>
+        <div className="sidebar-section sidebar-section-structure">
+          <div className="sidebar-section-title">项目</div>
+          <EpubStructureTree />
+        </div>
+
+        <div className="sidebar-footer">
+          <ImportButton />
+        </div>
+      </aside>
+
+      <section className="app-shell">
+        <header className="app-header">
+          <div className="app-title-block">
+            <BookOpen size={16} aria-hidden="true" />
+            <div className="app-title-copy">
+              <h1>{headerTitle}</h1>
+              <span>{headerSubtitle}</span>
+            </div>
+          </div>
+          <div className="app-header-actions">
+            <Toolbar
+              onConvert={handleConversion}
+              isConverting={isConverting}
+              conversionProgress={conversionProgress}
+              onProcessAllImages={handleProcessAllImages}
+              isProcessingImages={isProcessingImages}
+              canRunTools={canRunTools}
+              imageProcessingProgress={imageProcessingProgress}
+              imageProcessingTotal={imageProcessingTotal}
+              imageProcessingCurrentChapter={imageProcessingCurrentChapter}
+              imageProcessingCurrentImageUrl={imageProcessingCurrentImageUrl}
+              imageProcessingSuccess={imageProcessingSuccess}
+              imageProcessingFailed={imageProcessingFailed}
+              imageProcessingSkipped={imageProcessingSkipped}
+              imageProcessingProcessedUnique={imageProcessingProcessedUnique}
+            />
+            <span className="app-header-count">{epubs.length} 本</span>
+          </div>
+        </header>
+
+        <main className="app-main">
+          <section className="app-content">
+            <EpubReader />
+          </section>
+        </main>
+      </section>
       <NotificationCenter />
     </div>
   );

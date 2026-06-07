@@ -16,7 +16,10 @@ static CSS_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)"#).expect("valid CSS url reference regex")
 });
 
-/// 从原始 EPUB 复制和整理文件到标准目录
+/// 从原始 EPUB 复制和整理文件到标准目录。
+///
+/// 章节、样式和独立封面页会在从 ZIP 读出后直接重写资源引用，再写入
+/// 管理目录，避免先落盘再读回进行第二轮处理。
 pub fn copy_and_organize_files(
     source_path: &str,
     storage_path: &str,
@@ -35,6 +38,8 @@ pub fn copy_and_organize_files(
             &chapter.original_path,
             storage_path,
             &chapter.standard_path,
+            &analysis.file_map,
+            true,
         )?;
     }
 
@@ -45,6 +50,8 @@ pub fn copy_and_organize_files(
             &style.original_path,
             storage_path,
             &style.standard_path,
+            &analysis.file_map,
+            true,
         )?;
     }
 
@@ -55,6 +62,8 @@ pub fn copy_and_organize_files(
             &image.original_path,
             storage_path,
             &image.standard_path,
+            &analysis.file_map,
+            false,
         )?;
     }
 
@@ -65,6 +74,8 @@ pub fn copy_and_organize_files(
             &font.original_path,
             storage_path,
             &font.standard_path,
+            &analysis.file_map,
+            false,
         )?;
     }
 
@@ -75,29 +86,81 @@ pub fn copy_and_organize_files(
             &misc.original_path,
             storage_path,
             &misc.standard_path,
+            &analysis.file_map,
+            false,
         )?;
     }
 
-    // 复制封面页。若封面页已经作为 spine 章节复制，这里覆盖到同一路径，不改变内容。
+    // 复制未在章节/资源集合中处理过的封面页。
     if let Some(ref cover_path) = analysis.special_files.cover {
-        if let Some(standard_path) = analysis.file_map.original_to_standard.get(cover_path) {
-            extract_and_copy_file(&mut archive, cover_path, storage_path, standard_path)?;
+        if !is_regular_file_in_analysis(cover_path, analysis) {
+            if let Some(standard_path) = analysis.file_map.original_to_standard.get(cover_path) {
+                extract_and_copy_file(
+                    &mut archive,
+                    cover_path,
+                    storage_path,
+                    standard_path,
+                    &analysis.file_map,
+                    epub_path::is_text_like_file(standard_path),
+                )?;
+            }
         }
     }
 
     // 复制 nav.xhtml (EPUB 3.0 导航文件)
     if let Some(ref nav_path) = analysis.special_files.nav {
         let standard_path = "OEBPS/nav.xhtml";
-        extract_and_copy_file(&mut archive, nav_path, storage_path, standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            nav_path,
+            storage_path,
+            standard_path,
+            &analysis.file_map,
+            false,
+        )?;
     }
 
     // 复制 toc.ncx (EPUB 2.0 目录文件)
     if let Some(ref ncx_path) = analysis.special_files.ncx {
         let standard_path = "OEBPS/toc.ncx";
-        extract_and_copy_file(&mut archive, ncx_path, storage_path, standard_path)?;
+        extract_and_copy_file(
+            &mut archive,
+            ncx_path,
+            storage_path,
+            standard_path,
+            &analysis.file_map,
+            false,
+        )?;
     }
 
     Ok(())
+}
+
+fn is_regular_file_in_analysis(original_path: &str, analysis: &EpubStructureAnalysis) -> bool {
+    analysis
+        .chapters
+        .iter()
+        .any(|chapter| chapter.original_path == original_path)
+        || analysis
+            .resources
+            .styles
+            .iter()
+            .any(|resource| resource.original_path == original_path)
+        || analysis
+            .resources
+            .images
+            .iter()
+            .any(|resource| resource.original_path == original_path)
+        || analysis
+            .resources
+            .fonts
+            .iter()
+            .any(|resource| resource.original_path == original_path)
+        || analysis
+            .resources
+            .misc
+            .iter()
+            .any(|resource| resource.original_path == original_path)
 }
 
 /// 从 ZIP 中提取并复制文件
@@ -106,6 +169,8 @@ fn extract_and_copy_file(
     original_path: &str,
     storage_path: &str,
     standard_path: &str,
+    file_map: &FileMap,
+    rewrite_references: bool,
 ) -> Result<(), RefactorError> {
     // 尝试从 ZIP 中提取文件
     let mut source_file = match archive.by_name(original_path) {
@@ -131,6 +196,16 @@ fn extract_and_copy_file(
             .map_err(|e| RefactorError::IoError(format!("无法创建目录 {:?}: {}", parent, e)))?;
     }
 
+    if rewrite_references {
+        let content = String::from_utf8(buffer).map_err(|e| {
+            RefactorError::IoError(format!("无法按 UTF-8 读取文件 {}: {}", original_path, e))
+        })?;
+        let original_dir = epub_path::parent(original_path);
+        let standard_dir = epub_path::parent(standard_path);
+        let rewritten = rewrite_resource_paths(&content, &original_dir, &standard_dir, file_map);
+        buffer = rewritten.into_bytes();
+    }
+
     // 写入文件
     let mut target_file = File::create(&target_path)
         .map_err(|e| RefactorError::IoError(format!("无法创建文件 {:?}: {}", target_path, e)))?;
@@ -138,84 +213,6 @@ fn extract_and_copy_file(
     target_file
         .write_all(&buffer)
         .map_err(|e| RefactorError::IoError(format!("无法写入文件 {:?}: {}", target_path, e)))?;
-
-    Ok(())
-}
-
-/// 更新文件中的资源引用
-pub fn update_resource_references(
-    storage_path: &str,
-    analysis: &EpubStructureAnalysis,
-) -> Result<(), RefactorError> {
-    // 更新章节文件中的引用
-    for chapter in &analysis.chapters {
-        update_file_references(
-            storage_path,
-            &chapter.original_path,
-            &chapter.standard_path,
-            &analysis.file_map,
-        )?;
-    }
-
-    // 更新样式文件中的引用
-    for style in &analysis.resources.styles {
-        update_file_references(
-            storage_path,
-            &style.original_path,
-            &style.standard_path,
-            &analysis.file_map,
-        )?;
-    }
-
-    if let Some(ref cover_path) = analysis.special_files.cover {
-        let cover_already_updated = analysis
-            .chapters
-            .iter()
-            .any(|chapter| chapter.original_path == *cover_path);
-
-        if !cover_already_updated {
-            if let Some(standard_path) = analysis.file_map.original_to_standard.get(cover_path) {
-                if epub_path::is_text_like_file(standard_path) {
-                    update_file_references(
-                        storage_path,
-                        cover_path,
-                        standard_path,
-                        &analysis.file_map,
-                    )?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// 更新单个文件中的资源引用
-fn update_file_references(
-    storage_path: &str,
-    original_path: &str,
-    standard_path: &str,
-    file_map: &FileMap,
-) -> Result<(), RefactorError> {
-    let full_path = Path::new(storage_path).join(standard_path);
-
-    // 读取文件内容
-    let content = fs::read_to_string(&full_path)
-        .map_err(|e| RefactorError::IoError(format!("无法读取文件 {:?}: {}", full_path, e)))?;
-
-    // 获取原始文件所在目录（用于解析引用）
-    let original_dir = epub_path::parent(original_path);
-
-    // 获取重构后文件所在目录（用于计算新相对路径）
-    let standard_dir = epub_path::parent(standard_path);
-
-    // 重写资源路径
-    let rewritten = rewrite_resource_paths(&content, &original_dir, &standard_dir, file_map);
-
-    if rewritten != content {
-        fs::write(&full_path, rewritten)
-            .map_err(|e| RefactorError::IoError(format!("无法写入文件 {:?}: {}", full_path, e)))?;
-    }
 
     Ok(())
 }

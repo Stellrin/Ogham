@@ -1,123 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { useEpubStore, CombinedChapter, TocChapter, NavigationEntry } from '../store/epubStore';
-import { findChapterByHref, getChapterPath, getChapterName } from '../utils/epubPathUtils';
+import { useEpubStore, CombinedChapter } from '../store/epubStore';
+import { getChapterPath, getChapterName } from '../utils/epubPathUtils';
 import { TocTreeView } from './TocTreeView';
-
-// 将 NavigationEntry 转换为 TocChapter 格式
-const convertNavigationToToc = (navigation: NavigationEntry[], chapters: CombinedChapter[]): TocChapter[] => {
-  const flattenChapters = (items: NavigationEntry[], level: number, orderRef: { current: number }): TocChapter[] => {
-    return items.map((item) => {
-      const order = orderRef.current++;
-      const chapter = findChapterByHref(item.content_src, chapters);
-      const filePath = chapter ? getChapterPath(chapter) : undefined;
-
-      return {
-        id: item.id,
-        label: item.label,
-        contentSrc: item.content_src,
-        filePath,
-        level,
-        order,
-        children: flattenChapters(item.children, level + 1, orderRef),
-      };
-    });
-  };
-
-  const orderRef = { current: 0 };
-  return flattenChapters(navigation, 0, orderRef);
-};
-
-// 将章节列表转换为 TocChapter 格式（当没有导航信息时使用）
-const convertChaptersToToc = (chapters: CombinedChapter[]): TocChapter[] => {
-  return chapters.map((chapter, index) => {
-    return {
-      id: `chapter-${index}`,
-      label: chapter.title || getChapterName(chapter) || `Chapter ${index + 1}`,
-      contentSrc: getChapterPath(chapter) || '',
-      filePath: getChapterPath(chapter),
-      level: 0,
-      order: chapter.order ?? index,
-      children: [],
-    };
-  });
-};
-
-const sortChaptersByOrder = (chapters: CombinedChapter[]): CombinedChapter[] => {
-  return [...chapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-};
-
-const flattenTocEntries = (entries: TocChapter[]): TocChapter[] => {
-  return entries.flatMap((entry) => [entry, ...flattenTocEntries(entry.children)]);
-};
-
-const findChapterIndexForTocEntry = (
-  entry: TocChapter,
-  orderedChapters: CombinedChapter[]
-): number => {
-  const lookupHref = entry.filePath || entry.contentSrc;
-  if (!lookupHref) return -1;
-
-  const chapter = findChapterByHref(lookupHref, orderedChapters);
-  if (!chapter) return -1;
-
-  const chapterPath = getChapterPath(chapter);
-  return orderedChapters.findIndex((candidate) => getChapterPath(candidate) === chapterPath);
-};
-
-const attachSpineFileGroupsToToc = (
-  entries: TocChapter[],
-  chapters: CombinedChapter[]
-): TocChapter[] => {
-  if (entries.length === 0 || chapters.length === 0) {
-    return entries;
-  }
-
-  const orderedChapters = sortChaptersByOrder(chapters);
-  const flatEntries = flattenTocEntries(entries);
-  const targetIndexByEntryId = new Map<string, number>();
-
-  for (const entry of flatEntries) {
-    const targetIndex = findChapterIndexForTocEntry(entry, orderedChapters);
-    if (targetIndex >= 0) {
-      targetIndexByEntryId.set(entry.id, targetIndex);
-    }
-  }
-
-  const tocTargetIndices = Array.from(new Set(targetIndexByEntryId.values())).sort(
-    (a, b) => a - b
-  );
-
-  const filePathsByEntryId = new Map<string, string[]>();
-  for (const [entryId, targetIndex] of targetIndexByEntryId) {
-    const nextTargetIndex =
-      tocTargetIndices.find((candidateIndex) => candidateIndex > targetIndex) ??
-      orderedChapters.length;
-    const filePaths = orderedChapters
-      .slice(targetIndex, nextTargetIndex)
-      .map((chapter) => getChapterPath(chapter));
-
-    if (filePaths.length > 0) {
-      filePathsByEntryId.set(entryId, filePaths);
-    }
-  }
-
-  const attach = (tocItems: TocChapter[]): TocChapter[] => {
-    return tocItems.map((entry) => {
-      const existingFilePaths = entry.filePaths?.filter(Boolean) || [];
-      const filePaths = filePathsByEntryId.get(entry.id) || existingFilePaths;
-      const primaryFilePath = filePaths[0] || entry.filePath;
-
-      return {
-        ...entry,
-        filePath: primaryFilePath,
-        filePaths: filePaths.length > 0 ? filePaths : undefined,
-        children: attach(entry.children),
-      };
-    });
-  };
-
-  return attach(entries);
-};
+import {
+  BookText,
+  ChevronDown,
+  ChevronRight,
+  FileCode2,
+  Folder,
+  FolderOpen,
+  Image,
+  Palette,
+} from 'lucide-react';
 
 export const EpubStructureTree: React.FC = () => {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['text']));
@@ -142,10 +36,13 @@ export const EpubStructureTree: React.FC = () => {
     viewMode,
     setViewMode,
     tocEntries,
+    tocEntriesEpubId,
   } = useEpubStore();
 
   const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
   const managedStructure = selectedEpub?.refactoredStructure?.structure;
+  const selectedManagedEpubId =
+    selectedEpub?.refactoredStructure?.epubId || selectedEpub?.epubId || selectedEpub?.id;
 
   const imageList: string[] = managedStructure?.images || [];
   const styleList: string[] = managedStructure?.styles || [];
@@ -225,7 +122,16 @@ export const EpubStructureTree: React.FC = () => {
           className="tree-node tree-folder"
           onClick={() => toggleSection(sectionId)}
         >
-          <span className="tree-icon">{isExpanded ? '📂' : '📁'}</span>
+          {isExpanded ? (
+            <ChevronDown className="tree-chevron" size={13} aria-hidden="true" />
+          ) : (
+            <ChevronRight className="tree-chevron" size={13} aria-hidden="true" />
+          )}
+          {isExpanded ? (
+            <FolderOpen className="tree-icon" size={15} aria-hidden="true" />
+          ) : (
+            <Folder className="tree-icon" size={15} aria-hidden="true" />
+          )}
           <span className="tree-label">{label}</span>
         </div>
         {isExpanded && <div className="tree-children">{children}</div>}
@@ -233,14 +139,8 @@ export const EpubStructureTree: React.FC = () => {
     );
   };
 
-  const baseTocEntries =
-    tocEntries && tocEntries.length > 0
-      ? tocEntries
-      : managedStructure.navigation?.length > 0
-        ? convertNavigationToToc(managedStructure.navigation, allChapters)
-        : convertChaptersToToc(allChapters);
-
-  const tocTreeEntries = attachSpineFileGroupsToToc(baseTocEntries, allChapters);
+  const tocTreeEntries =
+    tocEntriesEpubId === selectedManagedEpubId ? tocEntries : [];
 
   return (
     <div className="structure-tree">
@@ -276,19 +176,19 @@ export const EpubStructureTree: React.FC = () => {
       <div className="structure-content">
         <FolderNode label="OEBPS/" sectionId="oebps">
           <div className="tree-node tree-leaf">
-            <span className="tree-icon">📄</span>
+            <FileCode2 className="tree-icon" size={15} aria-hidden="true" />
             <span className="tree-label file-name">content.opf</span>
             <span className="tree-badge">OPF</span>
           </div>
 
           <div className="tree-node tree-leaf">
-            <span className="tree-icon">📄</span>
+            <FileCode2 className="tree-icon" size={15} aria-hidden="true" />
             <span className="tree-label file-name">toc.ncx</span>
             <span className="tree-badge special">NCX</span>
           </div>
 
           <div className="tree-node tree-leaf">
-            <span className="tree-icon">📄</span>
+            <FileCode2 className="tree-icon" size={15} aria-hidden="true" />
             <span className="tree-label file-name">nav.xhtml</span>
             <span className="tree-badge special">NAV</span>
           </div>
@@ -305,7 +205,7 @@ export const EpubStructureTree: React.FC = () => {
                   className={`tree-node tree-leaf chapter-item ${isActive ? 'active' : ''}`}
                   onClick={(e) => handleChapterClick(e, chapter)}
                 >
-                  <span className="tree-icon">📖</span>
+                  <BookText className="tree-icon" size={15} aria-hidden="true" />
                   <span className="tree-label file-name">{chapterName}</span>
                   {(chapterName === 'cover.xhtml' || chapterName === 'cover') && (
                     <span className="tree-badge special">封面</span>
@@ -322,7 +222,7 @@ export const EpubStructureTree: React.FC = () => {
                 const fileName = style.split('/').pop() || style;
                 return (
                   <div key={index} className="tree-node tree-leaf">
-                    <span className="tree-icon">🎨</span>
+                    <Palette className="tree-icon" size={15} aria-hidden="true" />
                     <span className="tree-label file-name">{fileName}</span>
                   </div>
                 );
@@ -342,7 +242,7 @@ export const EpubStructureTree: React.FC = () => {
                     className={`tree-node tree-leaf image-item ${isViewing ? 'active' : ''}`}
                     onClick={(e) => handleImageClick(e, image)}
                   >
-                    <span className="tree-icon">🖼️</span>
+                    <Image className="tree-icon" size={15} aria-hidden="true" />
                     <span className="tree-label file-name">{fileName}</span>
                   </div>
                 );

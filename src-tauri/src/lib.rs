@@ -62,6 +62,7 @@ pub fn run() {
             epub::export_epub_command,
             epub::get_image_content_command,
             epub::get_image_from_refactored_command,
+            epub::resolve_chapter_href_command,
             epub::load_toc_entries_command,
             epub::update_toc_order_command,
             epub::update_toc_entry_command,

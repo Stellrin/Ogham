@@ -1,6 +1,6 @@
 import React from 'react';
 import { useEpubStore, TocChapter } from '../store/epubStore';
-import { getChapterPath } from '../utils/epubPathUtils';
+import { ChevronDown, ChevronRight, FileText } from 'lucide-react';
 
 interface TocTreeViewProps {
   entries: TocChapter[];
@@ -8,62 +8,37 @@ interface TocTreeViewProps {
 
 export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
   const {
-    epubs,
-    selectedEpubId,
     setReaderState,
     readerState,
     expandedTocIds,
     toggleTocExpanded,
   } = useEpubStore();
 
-  const selectedEpub = epubs.find((epub) => epub.id === selectedEpubId);
-  const chapters = selectedEpub?.refactoredStructure?.structure.chapters || [];
-
-  const normalizePath = (path: string | null | undefined): string => {
-    if (!path) return '';
-
-    let normalized = path.split('#')[0].replace(/\\/g, '/').replace(/\/+/g, '/');
-    try {
-      normalized = decodeURIComponent(normalized);
-    } catch {
-      // 保留原路径
-    }
-
-    if (normalized.startsWith('Text/')) {
-      normalized = `OEBPS/${normalized}`;
-    }
-
-    return normalized.toLowerCase();
-  };
-
-  const findChapterByPath = (chapterPath: string) => {
-    const normalizedTarget = normalizePath(chapterPath);
-    return chapters.find((chapter) => normalizePath(getChapterPath(chapter)) === normalizedTarget);
-  };
-
   const getEntryFilePaths = (entry: TocChapter): string[] => {
     const paths = entry.filePaths?.length
       ? entry.filePaths
-      : [entry.filePath || entry.contentSrc].filter(Boolean);
+      : [entry.filePath].filter((path): path is string => Boolean(path));
 
     return Array.from(new Set(paths));
   };
 
-  const getFileName = (filePath: string): string => {
-    return filePath.split(/[\\/]/).pop() || filePath;
+  const getEntryFileNames = (entry: TocChapter): string[] => {
+    const fileNames = entry.fileNames?.length
+      ? entry.fileNames
+      : [entry.fileName].filter((name): name is string => Boolean(name));
+
+    return fileNames.length > 0 ? fileNames : getEntryFilePaths(entry);
   };
 
-  const openChapterPath = (chapterPath: string, fallbackOrder: number) => {
-    const chapter = findChapterByPath(chapterPath);
-    const standardPath = chapter ? getChapterPath(chapter) : chapterPath;
-
-    if (standardPath) {
+  const openChapterPath = (chapterPath: string, order: number, anchor?: string | null) => {
+    if (chapterPath) {
       setReaderState({
-        currentChapterPath: standardPath,
-        currentChapterIndex: chapter?.order ?? fallbackOrder,
+        currentChapterPath: chapterPath,
+        currentChapterIndex: order,
         scrollPosition: 0,
         viewingImagePath: null,
         viewingImageData: null,
+        pendingAnchor: anchor || null,
       });
     }
   };
@@ -78,10 +53,9 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
   const renderEntry = (entry: TocChapter, depth: number = 0) => {
     const isExpanded = expandedTocIds.has(entry.id);
     const filePaths = getEntryFilePaths(entry);
-    const chapterPath = filePaths[0] || entry.filePath || entry.contentSrc;
-    const isActive = filePaths.some(
-      (filePath) => normalizePath(filePath) === normalizePath(readerState.currentChapterPath)
-    );
+    const fileNames = getEntryFileNames(entry);
+    const chapterPath = filePaths[0] || '';
+    const isActive = filePaths.some((filePath) => filePath === readerState.currentChapterPath);
     const hasChildren = entry.children.length > 0;
     const hasMultipleFiles = filePaths.length > 1;
 
@@ -96,13 +70,18 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
               className="toc-expand-icon"
               onClick={() => toggleTocExpanded(entry.id)}
             >
-              {isExpanded ? '▼' : '▶'}
+              {isExpanded ? (
+                <ChevronDown size={13} aria-hidden="true" />
+              ) : (
+                <ChevronRight size={13} aria-hidden="true" />
+              )}
             </span>
           ) : (
             <span className="toc-expand-icon-placeholder" />
           )}
 
           {/* 章节标题 */}
+          <FileText className="toc-item-icon" size={14} aria-hidden="true" />
           <span
             className="toc-label"
             onClick={() => handleEntryClick(entry)}
@@ -116,15 +95,14 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
             title={hasMultipleFiles ? filePaths.join('\n') : chapterPath}
             onClick={() => handleEntryClick(entry)}
           >
-            {hasMultipleFiles ? `${filePaths.length} 个文件` : getFileName(chapterPath)}
+            {hasMultipleFiles ? `${filePaths.length} 个文件` : fileNames[0] || chapterPath}
           </span>
         </div>
 
         {hasMultipleFiles && (
           <div className="toc-linked-files">
             {filePaths.map((filePath, index) => {
-              const isFileActive =
-                normalizePath(filePath) === normalizePath(readerState.currentChapterPath);
+              const isFileActive = filePath === readerState.currentChapterPath;
 
               return (
                 <button
@@ -134,11 +112,11 @@ export const TocTreeView: React.FC<TocTreeViewProps> = ({ entries }) => {
                   title={filePath}
                   onClick={(event) => {
                     event.stopPropagation();
-                    openChapterPath(filePath, entry.order);
+                    openChapterPath(filePath, entry.order, index === 0 ? entry.anchor : null);
                   }}
                 >
                   <span className="toc-linked-file-index">{index + 1}</span>
-                  <span className="toc-linked-file-name">{getFileName(filePath)}</span>
+                  <span className="toc-linked-file-name">{fileNames[index] || filePath}</span>
                 </button>
               );
             })}

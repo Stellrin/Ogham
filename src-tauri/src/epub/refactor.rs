@@ -5,7 +5,7 @@ use super::nav_builder::{generate_nav_xhtml, generate_toc_ncx};
 use super::opf_builder::generate_content_opf;
 use super::parser::parse_epub;
 use super::resource_index;
-use super::resource_manager::{copy_and_organize_files, update_resource_references};
+use super::resource_manager::copy_and_organize_files;
 use super::storage::{create_standard_directories, get_epub_storage_path, save_workspace_metadata};
 use std::path::Path;
 
@@ -27,9 +27,6 @@ pub fn refactor_epub(source_path: &str) -> Result<RefactoredEpub, RefactorError>
 
     // 复制和整理文件
     copy_and_organize_files(source_path, &storage_path, &analysis)?;
-
-    // 更新资源引用
-    update_resource_references(&storage_path, &analysis)?;
 
     // 生成 OPF 文件
     let opf_metadata = parsed.metadata.clone();
@@ -245,7 +242,9 @@ fn build_navigation(parsed: &ParsedEpub, analysis: &EpubStructureAnalysis) -> Na
         build_simple_navigation(analysis)
     };
 
-    Navigation { toc }
+    Navigation {
+        toc: normalize_navigation_entries(toc, analysis.chapters.len()),
+    }
 }
 
 /// 转换 TOC 到导航结构
@@ -350,7 +349,6 @@ fn validate_and_repair_toc(
     toc_entries: Vec<TocEntry>,
     analysis: &EpubStructureAnalysis,
 ) -> Vec<TocEntry> {
-    // 收集有效章节路径（规范化为正斜杠）
     let valid_chapters: std::collections::HashSet<String> = analysis
         .chapters
         .iter()
@@ -360,6 +358,13 @@ fn validate_and_repair_toc(
         })
         .collect();
 
+    validate_and_repair_toc_with_chapters(toc_entries, &valid_chapters)
+}
+
+fn validate_and_repair_toc_with_chapters(
+    toc_entries: Vec<TocEntry>,
+    valid_chapters: &std::collections::HashSet<String>,
+) -> Vec<TocEntry> {
     toc_entries
         .into_iter()
         .filter_map(|entry| {
@@ -381,7 +386,8 @@ fn validate_and_repair_toc(
             }
 
             // 递归验证子条目
-            let valid_children = validate_and_repair_toc(entry.children, analysis);
+            let valid_children =
+                validate_and_repair_toc_with_chapters(entry.children, valid_chapters);
 
             Some(TocEntry {
                 children: valid_children,
@@ -391,137 +397,73 @@ fn validate_and_repair_toc(
         .collect()
 }
 
-/// 将重构结果转换为返回给前端的格式
-pub fn convert_to_refactored_result(refactored: &RefactoredEpub) -> RefactoredEpubResult {
-    let structure = StandardEpubStructure {
-        chapters: refactored
-            .manifest
-            .items
-            .iter()
-            .filter(|item| is_renderable_chapter_item(item))
-            .filter_map(|item| {
-                // 从章节中查找标题
-                let title = find_navigation_title(&refactored.navigation.toc, &item.href);
-
-                // 提取文件名
-                let original_filename = item
-                    .href
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&item.href)
-                    .to_string();
-
-                // 添加 OEBPS/ 前缀作为标准路径
-                let standard_path = format!("OEBPS/{}", item.href);
-
-                // 查找章节顺序
-                let order = refactored
-                    .spine
-                    .itemrefs
-                    .iter()
-                    .position(|spine_item| spine_item.idref == item.id)
-                    .unwrap_or(refactored.spine.itemrefs.len());
-
-                Some(StandardChapter {
-                    id: item.id.clone(),
-                    original_filename,
-                    standard_path,
-                    title,
-                    order,
-                })
-            })
-            .collect(),
-        styles: refactored
-            .manifest
-            .items
-            .iter()
-            .filter(|item| item.media_type == "text/css")
-            .map(|item| format!("OEBPS/{}", item.href))
-            .collect(),
-        images: refactored
-            .manifest
-            .items
-            .iter()
-            .filter(|item| item.media_type.starts_with("image/"))
-            .map(|item| format!("OEBPS/{}", item.href))
-            .collect(),
-        fonts: refactored
-            .manifest
-            .items
-            .iter()
-            .filter(|item| {
-                matches!(
-                    item.media_type.as_str(),
-                    "font/ttf"
-                        | "font/otf"
-                        | "font/woff"
-                        | "font/woff2"
-                        | "application/font-ttf"
-                        | "application/font-woff"
-                        | "application/font-woff2"
-                )
-            })
-            .map(|item| format!("OEBPS/{}", item.href))
-            .collect(),
-        navigation: convert_navigation_to_frontend(&refactored.navigation.toc),
-    };
-
-    RefactoredEpubResult {
-        epub_id: refactored.epub_id.clone(),
-        metadata: refactored.metadata.clone(),
-        structure,
-        storage_path: refactored.storage_path.clone(),
-    }
-}
-
-/// 转换导航结构为前端格式
-fn convert_navigation_to_frontend(toc: &[TocEntry]) -> Vec<NavigationEntry> {
-    toc.iter()
-        .map(|entry| NavigationEntry {
-            id: entry.id.clone(),
-            label: entry.label.clone(),
-            content_src: entry.content_src.clone(),
-            level: entry.level,
-            children: convert_navigation_to_frontend(&entry.children),
-        })
-        .collect()
-}
-
-fn is_renderable_chapter_item(item: &StandardManifestItem) -> bool {
-    (item.media_type == "application/xhtml+xml" || item.media_type == "text/html")
-        && item.href.replace('\\', "/").starts_with("Text/")
-        && !item
-            .properties
-            .as_ref()
-            .map(|props| props.iter().any(|prop| prop == "nav"))
-            .unwrap_or(false)
-}
-
 fn is_text_document_href(href: &str) -> bool {
     let lower = href.to_lowercase();
     lower.ends_with(".xhtml") || lower.ends_with(".html")
 }
 
-fn find_navigation_title(entries: &[TocEntry], href: &str) -> Option<String> {
-    let normalized_href = href.split('#').next().unwrap_or(href);
+fn normalize_navigation_entries(
+    entries: Vec<TocEntry>,
+    expected_chapter_count: usize,
+) -> Vec<TocEntry> {
+    let collapsed = collapse_repeated_toc_label_blocks(entries, expected_chapter_count);
+    dedupe_navigation_entries(collapsed)
+}
 
-    for entry in entries {
-        if entry
-            .content_src
-            .split('#')
-            .next()
-            .unwrap_or(&entry.content_src)
-            == normalized_href
-        {
-            return Some(entry.label.clone());
+fn collapse_repeated_toc_label_blocks(
+    entries: Vec<TocEntry>,
+    expected_chapter_count: usize,
+) -> Vec<TocEntry> {
+    let len = entries.len();
+    if len < 4 || expected_chapter_count == 0 {
+        return entries;
+    }
+
+    for block_len in (2..=len / 2).rev() {
+        if block_len != expected_chapter_count || len % block_len != 0 {
+            continue;
         }
 
-        if let Some(title) = find_navigation_title(&entry.children, href) {
-            return Some(title);
+        let labels_repeat = (block_len..len).all(|index| {
+            toc_label_key(&entries[index].label) == toc_label_key(&entries[index % block_len].label)
+        });
+
+        if labels_repeat {
+            return entries[len - block_len..].to_vec();
         }
     }
 
-    None
+    entries
+}
+
+fn dedupe_navigation_entries(entries: Vec<TocEntry>) -> Vec<TocEntry> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped_reversed = Vec::new();
+
+    for mut entry in entries.into_iter().rev() {
+        entry.children = dedupe_navigation_entries(entry.children);
+        let key = toc_entry_identity_key(&entry);
+        if seen.insert(key) {
+            deduped_reversed.push(entry);
+        }
+    }
+
+    deduped_reversed.reverse();
+    deduped_reversed
+}
+
+fn toc_entry_identity_key(entry: &TocEntry) -> String {
+    let label = toc_label_key(&entry.label);
+    let target = epub_path::casefold(&entry.content_src);
+    format!("{}|{}", label, target)
+}
+
+fn toc_label_key(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[cfg(test)]
@@ -662,6 +604,166 @@ mod tests {
         let _ = fs::remove_dir_all(&refactored.storage_path);
         let _ = fs::remove_file(fixture_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn refactor_uses_single_toc_when_nav_and_ncx_both_exist(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_path = std::env::temp_dir().join(format!(
+            "ogham-nav-and-ncx-{}.epub",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        create_nav_and_ncx_epub(&fixture_path)?;
+
+        let fixture_path_str = fixture_path.to_string_lossy().to_string();
+        let refactored = refactor_epub(&fixture_path_str)?;
+
+        assert_eq!(refactored.navigation.toc.len(), 2);
+        assert_eq!(refactored.navigation.toc[0].label, "Chapter 1");
+        assert_eq!(
+            refactored.navigation.toc[0].content_src,
+            "Text/chapter1.xhtml"
+        );
+        assert_eq!(refactored.navigation.toc[1].label, "Chapter 2");
+        assert_eq!(
+            refactored.navigation.toc[1].content_src,
+            "Text/chapter2.xhtml"
+        );
+
+        let loaded_toc =
+            crate::epub::toc_manager::TocManager::load_toc_from_storage(&refactored.storage_path)?;
+        assert_eq!(loaded_toc.len(), 2);
+        assert_eq!(loaded_toc[0].label, "Chapter 1");
+        assert_eq!(
+            loaded_toc[0].file_path.as_deref(),
+            Some("OEBPS/Text/chapter1.xhtml")
+        );
+        assert_eq!(loaded_toc[1].label, "Chapter 2");
+        assert_eq!(
+            loaded_toc[1].file_path.as_deref(),
+            Some("OEBPS/Text/chapter2.xhtml")
+        );
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        let reloaded = runtime.block_on(crate::epub::reload_epub_structure_command(
+            refactored.epub_id.clone(),
+        ))?;
+        assert_eq!(reloaded.structure.navigation.len(), 2);
+        assert_eq!(reloaded.structure.navigation[0].label, "Chapter 1");
+        assert_eq!(
+            reloaded.structure.navigation[0].content_src,
+            "Text/chapter1.xhtml"
+        );
+        assert_eq!(reloaded.structure.navigation[1].label, "Chapter 2");
+        assert_eq!(
+            reloaded.structure.navigation[1].content_src,
+            "Text/chapter2.xhtml"
+        );
+
+        let refactored_zip = std::env::temp_dir()
+            .join("ogham-library")
+            .join(format!("{}_refactored.epub", refactored.epub_id));
+        let _ = fs::remove_file(refactored_zip);
+        let _ = fs::remove_dir_all(&refactored.storage_path);
+        let _ = fs::remove_file(fixture_path);
+
+        Ok(())
+    }
+
+    fn create_nav_and_ncx_epub(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::create(path)?;
+        let mut zip = ZipWriter::new(file);
+
+        zip.start_file(
+            "mimetype",
+            FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored),
+        )?;
+        zip.write_all(b"application/epub+zip")?;
+
+        zip.start_file("META-INF/container.xml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+        )?;
+
+        zip.start_file("OEBPS/content.opf", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Nav And NCX Fixture</dc:title>
+    <dc:identifier id="BookId">nav-and-ncx-fixture</dc:identifier>
+  </metadata>
+  <manifest>
+    <item href="Text/nav.xhtml" id="nav" media-type="application/xhtml+xml" properties="nav" />
+    <item href="toc.ncx" id="ncx" media-type="application/x-dtbncx+xml" />
+    <item href="Text/chapter1.xhtml" id="chapter1" media-type="application/xhtml+xml" />
+    <item href="Text/chapter2.xhtml" id="chapter2" media-type="application/xhtml+xml" />
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="nav" />
+    <itemref idref="chapter1" />
+    <itemref idref="chapter2" />
+  </spine>
+</package>"#,
+        )?;
+
+        zip.start_file("OEBPS/Text/nav.xhtml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body>
+    <nav epub:type="toc">
+      <ol>
+        <li><a href="chapter1.xhtml">Chapter 1</a></li>
+        <li><a href="chapter2.xhtml">Chapter 2</a></li>
+      </ol>
+    </nav>
+  </body>
+</html>"#,
+        )?;
+
+        zip.start_file("OEBPS/Text/chapter1.xhtml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>one</p></body></html>"#,
+        )?;
+
+        zip.start_file("OEBPS/Text/chapter2.xhtml", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>two</p></body></html>"#,
+        )?;
+
+        zip.start_file("OEBPS/toc.ncx", FileOptions::<()>::default())?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta content="nav-and-ncx-fixture" name="dtb:uid"/>
+  </head>
+  <docTitle><text>Nav And NCX Fixture</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>Chapter 1</text></navLabel>
+      <content src="Text/chapter1.xhtml"/>
+    </navPoint>
+    <navPoint id="navPoint-2" playOrder="2">
+      <navLabel><text>Chapter 2</text></navLabel>
+      <content src="Text/chapter2.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>"#,
+        )?;
+
+        zip.finish()?;
         Ok(())
     }
 

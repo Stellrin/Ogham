@@ -351,6 +351,10 @@ pub struct TocChapterDto {
     pub label: String,
     pub content_src: String,
     pub file_path: Option<String>,
+    pub file_paths: Vec<String>,
+    pub file_name: Option<String>,
+    pub file_names: Vec<String>,
+    pub anchor: Option<String>,
     pub level: usize,
     pub order: usize,
     pub children: Vec<TocChapterDto>,
@@ -371,6 +375,14 @@ pub struct TocUpdateRequest {
     pub entry_id: String,
     pub new_label: Option<String>,
     pub new_content_src: Option<String>,
+}
+
+/// 阅读器内部链接解析结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResolvedChapterHrefDto {
+    pub chapter_path: Option<String>,
+    pub anchor: Option<String>,
+    pub same_chapter: bool,
 }
 
 /// 图片批量处理结果

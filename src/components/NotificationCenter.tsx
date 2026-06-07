@@ -1,6 +1,7 @@
 import React from 'react';
 import { useEpubStore } from '../store/epubStore';
 import './NotificationCenter.css';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
 
 export const NotificationCenter: React.FC = () => {
   const notifications = useEpubStore((state) => state.notifications);
@@ -18,7 +19,18 @@ export const NotificationCenter: React.FC = () => {
           className={`app-notification notification-${notification.kind}`}
         >
           <div className="notification-header">
-            <span className="notification-dot" aria-hidden="true" />
+            {notification.kind === 'success' && (
+              <CheckCircle2 className="notification-icon" size={15} aria-hidden="true" />
+            )}
+            {notification.kind === 'error' && (
+              <AlertCircle className="notification-icon" size={15} aria-hidden="true" />
+            )}
+            {notification.kind === 'warning' && (
+              <AlertTriangle className="notification-icon" size={15} aria-hidden="true" />
+            )}
+            {notification.kind === 'info' && (
+              <Info className="notification-icon" size={15} aria-hidden="true" />
+            )}
             <strong className="notification-title">{notification.title}</strong>
             <button
               type="button"
@@ -26,7 +38,7 @@ export const NotificationCenter: React.FC = () => {
               onClick={() => dismissNotification(notification.id)}
               aria-label="关闭通知"
             >
-              ×
+              <X size={14} aria-hidden="true" />
             </button>
           </div>
 

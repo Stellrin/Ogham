@@ -21,6 +21,13 @@ pub fn split_reference_suffix(reference: &str) -> (&str, &str) {
     }
 }
 
+pub fn reference_anchor(reference: &str) -> Option<String> {
+    let (_, fragment) = reference.split_once('#')?;
+    let anchor = fragment.trim();
+
+    (!anchor.is_empty()).then(|| anchor.to_string())
+}
+
 /// Normalize an EPUB internal path and discard query/fragment suffixes.
 pub fn normalize(path: &str) -> String {
     let (path_part, _) = split_reference_suffix(path);
@@ -52,6 +59,13 @@ pub fn manifest_path(href: &str) -> String {
     } else {
         format!("OEBPS/{}", normalized)
     }
+}
+
+pub fn has_standard_dir_prefix(path: &str) -> bool {
+    let normalized = normalize(path);
+    STANDARD_DIR_PREFIXES
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
 }
 
 pub fn parent(path: &str) -> String {
@@ -305,6 +319,10 @@ mod tests {
         assert_eq!(
             normalize_reference("Text/Character%20Profile1.xhtml#frag"),
             "Text/Character Profile1.xhtml#frag"
+        );
+        assert_eq!(
+            reference_anchor("Text/chapter.xhtml?x=1#p2"),
+            Some("p2".to_string())
         );
     }
 

@@ -5,6 +5,7 @@ use crate::epub::models::{
 };
 use crate::epub::opf_document;
 use crate::epub::resource_index;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -12,28 +13,26 @@ use std::path::Path;
 pub struct TocManager;
 
 impl TocManager {
-    /// 加载并解析目录到文件的映射
-    pub fn load_toc_with_file_mapping(
-        epub_id: &str,
-        base_path: &str,
-    ) -> Result<Vec<TocChapterDto>, RefactorError> {
-        let storage_path = crate::epub::storage::get_epub_storage_path(epub_id);
-        let nav_path = Path::new(&storage_path).join("OEBPS/nav.xhtml");
-        let ncx_path = Path::new(&storage_path).join("OEBPS/toc.ncx");
+    /// 从标准化后的管理目录加载并解析目录到文件的映射
+    pub fn load_toc_from_storage(storage_path: &str) -> Result<Vec<TocChapterDto>, RefactorError> {
+        let nav_path = Path::new(storage_path).join("OEBPS/nav.xhtml");
+        let ncx_path = Path::new(storage_path).join("OEBPS/toc.ncx");
 
-        // 优先尝试加载 nav.xhtml
-        if nav_path.exists() {
-            return Self::load_from_nav(&nav_path.to_string_lossy(), base_path);
-        }
+        let entries = if nav_path.exists() {
+            // 优先尝试加载 nav.xhtml
+            Self::load_from_nav(&nav_path.to_string_lossy(), storage_path)?
+        } else if ncx_path.exists() {
+            // 回退到 toc.ncx
+            Self::load_from_ncx(&ncx_path.to_string_lossy(), storage_path)?
+        } else {
+            return Err(RefactorError::MissingFile(
+                "No navigation file found (nav.xhtml or toc.ncx)".to_string(),
+            ));
+        };
 
-        // 回退到 toc.ncx
-        if ncx_path.exists() {
-            return Self::load_from_ncx(&ncx_path.to_string_lossy(), base_path);
-        }
-
-        Err(RefactorError::MissingFile(
-            "No navigation file found (nav.xhtml or toc.ncx)".to_string(),
-        ))
+        let entries = Self::prune_missing_toc_targets(entries, storage_path);
+        let entries = Self::normalize_toc_entries(entries);
+        Self::attach_spine_file_groups(entries, storage_path)
     }
 
     /// 从 nav.xhtml 加载目录
@@ -59,25 +58,27 @@ impl TocManager {
         let mut entries = Vec::new();
         let mut order_counter = 0usize;
 
-        // 查找所有 nav 元素（特别是 epub:type="toc" 的）
-        Self::parse_nav_epub3_elements(content, 0, &mut entries, &mut order_counter, base_path);
+        if let Some(nav_content) = Self::find_toc_nav_content(content) {
+            let ol_content = nav_content
+                .find("<ol")
+                .and_then(|ol_start| {
+                    Self::find_matching_close_html(&nav_content[ol_start..], "<ol", "</ol>")
+                        .map(|ol_end| &nav_content[ol_start..ol_start + ol_end])
+                })
+                .unwrap_or(nav_content);
+
+            Self::parse_ol_elements(ol_content, 0, &mut entries, &mut order_counter, base_path);
+        }
 
         Ok(entries)
     }
 
-    /// 递归解析 EPUB 3.0 nav 元素（HTML 格式）
-    fn parse_nav_epub3_elements(
-        content: &str,
-        level: usize,
-        entries: &mut Vec<TocChapterDto>,
-        order_counter: &mut usize,
-        base_path: &str,
-    ) {
-        // 查找所有 <nav> 元素
+    fn find_toc_nav_content(content: &str) -> Option<&str> {
         let mut search_pos = 0;
+        let mut first_list_nav = None;
+
         while let Some(nav_start) = content[search_pos..].find("<nav") {
             let nav_start = search_pos + nav_start;
-            // 找到 nav 元素的结束位置
             let nav_end =
                 match Self::find_matching_close_html(&content[nav_start..], "<nav", "</nav>") {
                     Some(end) => nav_start + end,
@@ -88,15 +89,28 @@ impl TocManager {
                 };
 
             let nav_content = &content[nav_start..nav_end];
+            if Self::is_toc_nav(nav_content) {
+                return Some(nav_content);
+            }
 
-            // 检查是否是目录 nav（epub:type="toc"）或包含 <ol> 的 nav
-            if nav_content.contains("epub:type=\"toc\"") || nav_content.contains("<ol>") {
-                // 解析 <ol>/<li>/<a> 结构
-                Self::parse_ol_elements(nav_content, level, entries, order_counter, base_path);
+            if first_list_nav.is_none() && nav_content.contains("<ol") {
+                first_list_nav = Some(nav_content);
             }
 
             search_pos = nav_end;
         }
+
+        first_list_nav
+    }
+
+    fn is_toc_nav(nav_content: &str) -> bool {
+        let start_tag_end = nav_content.find('>').unwrap_or(nav_content.len());
+        let start_tag = &nav_content[..start_tag_end];
+
+        start_tag.contains("epub:type=\"toc\"")
+            || start_tag.contains("epub:type='toc'")
+            || start_tag.contains("type=\"toc\"")
+            || start_tag.contains("type='toc'")
     }
 
     /// 解析 <ol> 元素中的所有 <li> 项
@@ -166,6 +180,10 @@ impl TocManager {
                             label,
                             content_src: href,
                             file_path: Some(file_path),
+                            file_paths: Vec::new(),
+                            file_name: None,
+                            file_names: Vec::new(),
+                            anchor: None,
                             level,
                             order,
                             children,
@@ -235,9 +253,7 @@ impl TocManager {
                 continue;
             }
             // 检查是否是自闭合标签（如 <br/>, <img/> 等）
-            let lower_slice = content[search_pos..].to_lowercase();
-
-            if lower_slice.starts_with(&open_tag_lower) {
+            if starts_with_ignore_ascii_case_at(content, search_pos, &open_tag_lower) {
                 // 检查是否有 /> 自闭合
                 let after_open = &content[search_pos + open_tag.len()..];
                 if after_open.starts_with("/>")
@@ -249,7 +265,7 @@ impl TocManager {
                 }
                 depth += 1;
                 search_pos += open_tag.len();
-            } else if lower_slice.starts_with(&close_tag_lower) {
+            } else if starts_with_ignore_ascii_case_at(content, search_pos, &close_tag_lower) {
                 depth -= 1;
                 if depth == 0 {
                     return Some(search_pos + close_tag.len());
@@ -267,35 +283,22 @@ impl TocManager {
         None
     }
 
-    /// 递归解析 nav 元素
-    fn parse_nav_elements(
+    fn parse_navpoint_elements(
         content: &str,
         level: usize,
         entries: &mut Vec<TocChapterDto>,
         order_counter: &mut usize,
         base_path: &str,
     ) {
-        // 使用简单的字符串匹配解析 navMap 中的 navPoint
-        let nav_map_start = match content.find("<navMap") {
-            Some(pos) => pos,
-            None => return,
-        };
-
-        let nav_map_content = &content[nav_map_start..];
-
-        // 查找所有 navPoint
         let mut search_pos = 0;
-        while let Some(point_start) = nav_map_content[search_pos..].find("<navPoint") {
+        while let Some(point_start) = content[search_pos..].find("<navPoint") {
             let point_start = search_pos + point_start;
-            let point_end = Self::find_matching_close(
-                &nav_map_content[point_start..],
-                "<navPoint",
-                "</navPoint>",
-            )
-            .map(|end| point_start + end)
-            .unwrap_or(nav_map_content.len());
+            let point_end =
+                Self::find_matching_close(&content[point_start..], "<navPoint", "</navPoint>")
+                    .map(|end| point_start + end)
+                    .unwrap_or(content.len());
 
-            let nav_point_content = &nav_map_content[point_start..point_end];
+            let nav_point_content = &content[point_start..point_end];
 
             // 提取 id
             let id = Self::extract_attribute(nav_point_content, "id")
@@ -315,13 +318,18 @@ impl TocManager {
 
             // 递归处理子元素
             let mut children = Vec::new();
-            Self::parse_nav_elements(
-                nav_point_content,
-                level + 1,
-                &mut children,
-                order_counter,
-                base_path,
-            );
+            let child_content_start = nav_point_content["<navPoint".len()..]
+                .find("<navPoint")
+                .map(|pos| pos + "<navPoint".len());
+            if let Some(child_start) = child_content_start {
+                Self::parse_navpoint_elements(
+                    &nav_point_content[child_start..],
+                    level + 1,
+                    &mut children,
+                    order_counter,
+                    base_path,
+                );
+            }
 
             let order = *order_counter;
             *order_counter += 1;
@@ -331,6 +339,10 @@ impl TocManager {
                 label,
                 content_src,
                 file_path: Some(file_path),
+                file_paths: Vec::new(),
+                file_name: None,
+                file_names: Vec::new(),
+                anchor: None,
                 level,
                 order,
                 children,
@@ -338,6 +350,24 @@ impl TocManager {
 
             search_pos = point_end;
         }
+    }
+
+    /// 递归解析 nav 元素
+    fn parse_nav_elements(
+        content: &str,
+        level: usize,
+        entries: &mut Vec<TocChapterDto>,
+        order_counter: &mut usize,
+        base_path: &str,
+    ) {
+        // 使用简单的字符串匹配解析 navMap 中的 navPoint
+        let nav_map_start = match content.find("<navMap") {
+            Some(pos) => pos,
+            None => return,
+        };
+
+        let nav_map_content = &content[nav_map_start..];
+        Self::parse_navpoint_elements(nav_map_content, level, entries, order_counter, base_path);
     }
 
     /// 从 toc.ncx 加载目录
@@ -395,13 +425,18 @@ impl TocManager {
             let file_path = Self::parse_content_src(&content_src, base_path);
 
             let mut children = Vec::new();
-            Self::parse_ncx_navmap(
-                nav_point_content,
-                level + 1,
-                &mut children,
-                order_counter,
-                base_path,
-            );
+            let child_content_start = nav_point_content["<navPoint".len()..]
+                .find("<navPoint")
+                .map(|pos| pos + "<navPoint".len());
+            if let Some(child_start) = child_content_start {
+                Self::parse_ncx_navmap(
+                    &nav_point_content[child_start..],
+                    level + 1,
+                    &mut children,
+                    order_counter,
+                    base_path,
+                );
+            }
 
             let order = *order_counter;
             *order_counter += 1;
@@ -411,6 +446,10 @@ impl TocManager {
                 label,
                 content_src,
                 file_path: Some(file_path),
+                file_paths: Vec::new(),
+                file_name: None,
+                file_names: Vec::new(),
+                anchor: None,
                 level,
                 order,
                 children,
@@ -424,6 +463,278 @@ impl TocManager {
     /// 返回形如 "OEBPS/Text/xxx.xhtml" 的路径，与 StandardChapter.standard_path 保持一致
     pub fn parse_content_src(content_src: &str, _base_path: &str) -> String {
         epub_path::to_standard_content_path(content_src)
+    }
+
+    fn normalize_toc_entries(entries: Vec<TocChapterDto>) -> Vec<TocChapterDto> {
+        let deduped = Self::dedupe_toc_entries(entries);
+        let mut order_counter = 0usize;
+        Self::renumber_toc_entries(deduped, 0, &mut order_counter)
+    }
+
+    fn attach_spine_file_groups(
+        entries: Vec<TocChapterDto>,
+        storage_path: &str,
+    ) -> Result<Vec<TocChapterDto>, RefactorError> {
+        let document = opf_document::load_opf_document(storage_path, "unknown")?;
+        let ordered_chapters = Self::ordered_chapter_paths(&document.manifest, &document.spine);
+        Ok(Self::attach_spine_file_groups_to_entries(
+            entries,
+            &ordered_chapters,
+        ))
+    }
+
+    fn ordered_chapter_paths(manifest: &StandardManifest, spine: &StandardSpine) -> Vec<String> {
+        let manifest_by_id: HashMap<&str, &crate::epub::models::StandardManifestItem> = manifest
+            .items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+
+        spine
+            .itemrefs
+            .iter()
+            .filter_map(|itemref| {
+                manifest_by_id
+                    .get(itemref.idref.as_str())
+                    .copied()
+                    .filter(|item| Self::is_renderable_chapter_item(item))
+                    .map(|item| format!("OEBPS/{}", item.href))
+            })
+            .collect()
+    }
+
+    fn is_renderable_chapter_item(item: &crate::epub::models::StandardManifestItem) -> bool {
+        (item.media_type == "application/xhtml+xml" || item.media_type == "text/html")
+            && item.href.replace('\\', "/").starts_with("Text/")
+            && !item
+                .properties
+                .as_ref()
+                .map(|props| props.iter().any(|prop| prop == "nav"))
+                .unwrap_or(false)
+    }
+
+    fn attach_spine_file_groups_to_entries(
+        mut entries: Vec<TocChapterDto>,
+        ordered_chapters: &[String],
+    ) -> Vec<TocChapterDto> {
+        let chapter_index_by_path = Self::chapter_index_by_path(ordered_chapters);
+        let mut target_indices = Vec::new();
+        Self::collect_toc_target_indices(&entries, &chapter_index_by_path, &mut target_indices);
+        target_indices.sort_unstable();
+        target_indices.dedup();
+
+        Self::attach_spine_file_groups_recursive(
+            &mut entries,
+            ordered_chapters,
+            &chapter_index_by_path,
+            &target_indices,
+        );
+        entries
+    }
+
+    fn chapter_index_by_path(ordered_chapters: &[String]) -> HashMap<String, usize> {
+        ordered_chapters
+            .iter()
+            .enumerate()
+            .map(|(index, chapter_path)| (epub_path::casefold(chapter_path), index))
+            .collect()
+    }
+
+    fn collect_toc_target_indices(
+        entries: &[TocChapterDto],
+        chapter_index_by_path: &HashMap<String, usize>,
+        target_indices: &mut Vec<usize>,
+    ) {
+        for entry in entries {
+            if let Some(index) = Self::chapter_index_for_entry(entry, chapter_index_by_path) {
+                target_indices.push(index);
+            }
+
+            Self::collect_toc_target_indices(
+                &entry.children,
+                chapter_index_by_path,
+                target_indices,
+            );
+        }
+    }
+
+    fn attach_spine_file_groups_recursive(
+        entries: &mut [TocChapterDto],
+        ordered_chapters: &[String],
+        chapter_index_by_path: &HashMap<String, usize>,
+        target_indices: &[usize],
+    ) {
+        for entry in entries {
+            Self::attach_spine_file_groups_recursive(
+                &mut entry.children,
+                ordered_chapters,
+                chapter_index_by_path,
+                target_indices,
+            );
+            Self::attach_file_metadata(
+                entry,
+                ordered_chapters,
+                chapter_index_by_path,
+                target_indices,
+            );
+        }
+    }
+
+    fn attach_file_metadata(
+        entry: &mut TocChapterDto,
+        ordered_chapters: &[String],
+        chapter_index_by_path: &HashMap<String, usize>,
+        target_indices: &[usize],
+    ) {
+        entry.anchor = Self::entry_anchor(entry);
+
+        let Some(target_index) = Self::chapter_index_for_entry(entry, chapter_index_by_path) else {
+            Self::fill_file_display_fields(entry);
+            return;
+        };
+
+        let next_target_position =
+            target_indices.partition_point(|candidate| *candidate <= target_index);
+        let next_target_index = target_indices
+            .get(next_target_position)
+            .copied()
+            .unwrap_or(ordered_chapters.len());
+
+        let file_paths: Vec<String> = ordered_chapters[target_index..next_target_index].to_vec();
+        if let Some(primary_path) = file_paths.first() {
+            entry.file_path = Some(primary_path.clone());
+        }
+        entry.file_paths = file_paths;
+        Self::fill_file_display_fields(entry);
+    }
+
+    fn chapter_index_for_entry(
+        entry: &TocChapterDto,
+        chapter_index_by_path: &HashMap<String, usize>,
+    ) -> Option<usize> {
+        let target_path = entry.file_path.as_deref()?;
+        let target_key = epub_path::casefold(target_path);
+        chapter_index_by_path.get(&target_key).copied()
+    }
+
+    fn fill_file_display_fields(entry: &mut TocChapterDto) {
+        if entry.file_paths.is_empty() {
+            if let Some(file_path) = entry.file_path.clone() {
+                entry.file_paths.push(file_path);
+            }
+        }
+
+        entry.file_name = entry
+            .file_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(Self::file_name);
+        entry.file_names = entry
+            .file_paths
+            .iter()
+            .map(|path| Self::file_name(path))
+            .collect();
+    }
+
+    fn file_name(path: &str) -> String {
+        epub_path::filename(path)
+    }
+
+    fn entry_anchor(entry: &TocChapterDto) -> Option<String> {
+        epub_path::reference_anchor(&entry.content_src)
+    }
+
+    fn prune_missing_toc_targets(
+        entries: Vec<TocChapterDto>,
+        storage_path: &str,
+    ) -> Vec<TocChapterDto> {
+        entries
+            .into_iter()
+            .filter_map(|mut entry| {
+                entry.children = Self::prune_missing_toc_targets(entry.children, storage_path);
+
+                if Self::toc_target_exists(&entry, storage_path) || !entry.children.is_empty() {
+                    Some(entry)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn toc_target_exists(entry: &TocChapterDto, storage_path: &str) -> bool {
+        let content_src = entry.content_src.trim();
+        if content_src.is_empty() || content_src.starts_with('#') {
+            return true;
+        }
+
+        let Some(file_path) = entry
+            .file_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+        else {
+            return false;
+        };
+
+        Path::new(storage_path).join(file_path).exists()
+    }
+
+    fn dedupe_toc_entries(entries: Vec<TocChapterDto>) -> Vec<TocChapterDto> {
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped_reversed = Vec::new();
+
+        for mut entry in entries.into_iter().rev() {
+            entry.children = Self::dedupe_toc_entries(entry.children);
+            let key = Self::toc_entry_identity_key(&entry);
+            if seen.insert(key) {
+                deduped_reversed.push(entry);
+            }
+        }
+
+        deduped_reversed.reverse();
+        deduped_reversed
+    }
+
+    fn renumber_toc_entries(
+        entries: Vec<TocChapterDto>,
+        level: usize,
+        order_counter: &mut usize,
+    ) -> Vec<TocChapterDto> {
+        entries
+            .into_iter()
+            .map(|mut entry| {
+                let order = *order_counter;
+                *order_counter += 1;
+                entry.level = level;
+                entry.order = order;
+                entry.children =
+                    Self::renumber_toc_entries(entry.children, level + 1, order_counter);
+                entry
+            })
+            .collect()
+    }
+
+    fn toc_entry_identity_key(entry: &TocChapterDto) -> String {
+        let label = entry
+            .label
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let target = Self::canonical_toc_target(entry);
+        format!("{}|{}", label, target)
+    }
+
+    fn canonical_toc_target(entry: &TocChapterDto) -> String {
+        let source = entry
+            .file_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .unwrap_or(&entry.content_src);
+        let suffix = epub_path::split_reference_suffix(&entry.content_src).1;
+        let standard_path = Self::parse_content_src(source, "");
+
+        format!("{}{}", epub_path::casefold(&standard_path), suffix)
     }
 
     /// 更新导航文件 (nav.xhtml)
@@ -621,22 +932,44 @@ impl TocManager {
         let mut search_pos = 0;
 
         while search_pos < content.len() {
-            if let Some(open_pos) = content[search_pos..].find(open_tag) {
-                depth += 1;
-                search_pos += open_pos + open_tag.len();
-            } else if let Some(close_pos) = content[search_pos..].find(close_tag) {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(search_pos + close_pos + close_tag.len());
+            let remaining = &content[search_pos..];
+            let next_open = remaining.find(open_tag);
+            let next_close = remaining.find(close_tag);
+
+            match (next_open, next_close) {
+                (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
+                    depth += 1;
+                    search_pos += open_pos + open_tag.len();
                 }
-                search_pos += close_pos + close_tag.len();
-            } else {
-                break;
+                (Some(_), Some(close_pos)) | (None, Some(close_pos)) => {
+                    depth -= 1;
+                    let close_end = search_pos + close_pos + close_tag.len();
+                    if depth == 0 {
+                        return Some(close_end);
+                    }
+                    search_pos = close_end;
+                }
+                (Some(open_pos), None) => {
+                    depth += 1;
+                    search_pos += open_pos + open_tag.len();
+                }
+                (None, None) => break,
             }
         }
 
         None
     }
+}
+
+fn starts_with_ignore_ascii_case_at(content: &str, index: usize, needle: &str) -> bool {
+    let Some(end) = index.checked_add(needle.len()) else {
+        return false;
+    };
+
+    content
+        .get(index..end)
+        .map(|slice| slice.eq_ignore_ascii_case(needle))
+        .unwrap_or(false)
 }
 
 /// 辅助函数：更新目录条目
@@ -649,7 +982,7 @@ pub fn update_toc_entry(
     let storage_path = crate::epub::storage::get_epub_storage_path(epub_id);
 
     // 加载现有目录
-    let mut toc = TocManager::load_toc_with_file_mapping(epub_id, &storage_path)?;
+    let mut toc = TocManager::load_toc_from_storage(&storage_path)?;
 
     // 更新条目
     let updated = update_toc_entry_recursive(&mut toc, entry_id, new_label, new_content_src);
@@ -717,6 +1050,10 @@ fn convert_order_to_toc(
                 label: o.label.clone(),
                 content_src: o.content_src.clone(),
                 file_path: Some(TocManager::parse_content_src(&o.content_src, "")),
+                file_paths: Vec::new(),
+                file_name: None,
+                file_names: Vec::new(),
+                anchor: None,
                 level,
                 order,
                 children: convert_order_to_toc(&o.children, level + 1, order_counter),
@@ -743,5 +1080,87 @@ mod tests {
             TocManager::parse_content_src("chapter.xhtml#frag", ""),
             "OEBPS/Text/chapter.xhtml"
         );
+    }
+
+    #[test]
+    fn parses_ncx_sibling_navpoints_once() {
+        let content = r#"
+        <ncx>
+          <navMap>
+            <navPoint id="chapter-1">
+              <navLabel><text>第一章</text></navLabel>
+              <content src="Text/chapter1.xhtml"/>
+            </navPoint>
+            <navPoint id="chapter-2">
+              <navLabel><text>第二章</text></navLabel>
+              <content src="Text/chapter2.xhtml"/>
+            </navPoint>
+          </navMap>
+        </ncx>
+        "#;
+
+        let mut entries = Vec::new();
+        let mut order_counter = 0usize;
+        TocManager::parse_ncx_navmap(content, 0, &mut entries, &mut order_counter, "");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "第一章");
+        assert_eq!(entries[1].label, "第二章");
+        assert!(entries[0].children.is_empty());
+        assert!(entries[1].children.is_empty());
+    }
+
+    #[test]
+    fn parses_nav_sibling_items_once() {
+        let content = r#"
+        <ol class="toc">
+          <li><a href="Text/chapter1.xhtml">第一章</a></li>
+          <li><a href="Text/chapter2.xhtml">第二章</a></li>
+        </ol>
+        "#;
+
+        let mut entries = Vec::new();
+        let mut order_counter = 0usize;
+        TocManager::parse_ol_elements(content, 0, &mut entries, &mut order_counter, "");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "第一章");
+        assert_eq!(entries[1].label, "第二章");
+        assert!(entries[0].children.is_empty());
+        assert!(entries[1].children.is_empty());
+    }
+
+    #[test]
+    fn normalizes_duplicate_nav_sources_to_single_toc() {
+        let entries = vec![
+            test_toc_entry("nav-html-1", "第一章", "episode1.xhtml", 0),
+            test_toc_entry("nav-html-2", "第二章", "episode2.xhtml", 1),
+            test_toc_entry("ncx-1", "第一章", "Text/episode1.xhtml", 2),
+            test_toc_entry("ncx-2", "第二章", "Text/episode2.xhtml", 3),
+        ];
+
+        let normalized = TocManager::normalize_toc_entries(entries);
+
+        assert_eq!(normalized.len(), 2);
+        assert_eq!(normalized[0].id, "ncx-1");
+        assert_eq!(normalized[0].order, 0);
+        assert_eq!(normalized[1].id, "ncx-2");
+        assert_eq!(normalized[1].order, 1);
+    }
+
+    fn test_toc_entry(id: &str, label: &str, content_src: &str, order: usize) -> TocChapterDto {
+        TocChapterDto {
+            id: id.to_string(),
+            label: label.to_string(),
+            content_src: content_src.to_string(),
+            file_path: Some(TocManager::parse_content_src(content_src, "")),
+            file_paths: Vec::new(),
+            file_name: None,
+            file_names: Vec::new(),
+            anchor: None,
+            level: 0,
+            order,
+            children: Vec::new(),
+        }
     }
 }

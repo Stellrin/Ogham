@@ -1,11 +1,12 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useEpubStore } from '../store/epubStore';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { parseEpubHref, findChapterByHref, getChapterPath, getChapterName, resolveEpubPath } from '../utils/epubPathUtils';
+import { getChapterName } from '../utils/epubPathUtils';
 import './EpubReader.css';
+import { Loader2 } from 'lucide-react';
 
 export const EpubReader: React.FC = () => {
-  const { epubs, selectedEpubId, readerState, loadRefactoredChapter, setReaderState } =
+  const { epubs, selectedEpubId, readerState, loadRefactoredChapter, setReaderState, resolveChapterHref } =
     useEpubStore();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
@@ -15,25 +16,17 @@ export const EpubReader: React.FC = () => {
 
   const chapters = selectedEpub?.refactoredStructure?.structure.chapters || [];
 
-  // 标准化章节路径：将 "Text/x.xhtml" 补全为 "OEBPS/Text/x.xhtml" 以兼容旧格式
-  const normalizeChapterPath = (p: string | null): string => {
-    if (!p) return '';
-    if (p.startsWith('Text/')) return 'OEBPS/' + p;
-    return p;
-  };
-
-  // 查找当前章节（路径标准化后匹配）
-  const normalizedCurrentPath = normalizeChapterPath(readerState.currentChapterPath);
+  const currentChapterPath = readerState.currentChapterPath || '';
   const currentChapter = chapters.find(
-    (c) => getChapterPath(c) === normalizedCurrentPath
+    (c) => c.standard_path === currentChapterPath
   );
 
   // 当章节路径改变时加载章节内容
   useEffect(() => {
     if (readerState.viewingImagePath && readerState.viewingImageData) {
       renderImage(readerState.viewingImageData, readerState.viewingImagePath);
-    } else if (normalizedCurrentPath && !currentChapter?.content) {
-      loadChapter(normalizedCurrentPath);
+    } else if (currentChapterPath && !currentChapter?.content) {
+      loadChapter(currentChapterPath);
     } else if (currentChapter?.content) {
       renderContent(currentChapter.content.html);
     }
@@ -100,7 +93,7 @@ export const EpubReader: React.FC = () => {
               font-size: ${readerState.fontSize}px;
               line-height: ${readerState.lineHeight};
               color: #333;
-              background-color: #ffffff;
+              background-color: #fbfbf8;
               display: flex;
               flex-direction: column;
               align-items: center;
@@ -185,7 +178,7 @@ export const EpubReader: React.FC = () => {
               font-size: ${readerState.fontSize}px;
               line-height: ${readerState.lineHeight};
               color: #333;
-              background-color: #ffffff;
+              background-color: #fbfbf8;
             }
             img {
               max-width: 100%;
@@ -288,51 +281,31 @@ export const EpubReader: React.FC = () => {
       return;
     }
 
-    // 纯锚点链接：同页面跳转
-    if (href.startsWith('#')) {
-      event.preventDefault();
-      scrollToAnchor(href.slice(1));
+    // EPUB 内部链接交给后端按当前管理目录解析
+    event.preventDefault();
+    navigateToChapterWithAnchor(href).catch((error) => {
+      setError(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  const navigateToChapterWithAnchor = async (href: string) => {
+    const resolved = await resolveChapterHref(href);
+    const chapterPath = resolved.chapterPath || resolved.chapter_path;
+    const anchor = resolved.anchor || null;
+    const sameChapter = resolved.sameChapter ?? resolved.same_chapter ?? false;
+
+    if (sameChapter) {
+      scrollToAnchor(anchor || '');
       return;
     }
 
-    // 解析链接
-    const parsed = parseEpubHref(href);
-
-    // 检查是否为当前文件的锚点（如 "current.xhtml#section2" 或同文件引用）
-    if (parsed.chapterPath && readerState.currentChapterPath) {
-      const currentBasePath = readerState.currentChapterPath.split('/').slice(0, -1).join('/');
-      const resolvedTargetPath = normalizePath(resolveEpubPath(currentBasePath, parsed.chapterPath));
-      const currentPath = normalizePath(readerState.currentChapterPath);
-
-      if (resolvedTargetPath === currentPath) {
-        event.preventDefault();
-        scrollToAnchor(parsed.anchor);
-        return;
-      }
-    }
-
-    // 跨章节链接：使用新的导航函数
-    event.preventDefault();
-    navigateToChapterWithAnchor(href);
-  };
-
-  const navigateToChapterWithAnchor = (href: string) => {
-    if (!selectedEpub) return;
-
-    const parsed = parseEpubHref(href);
-    const targetChapter = findChapterByHref(
-      parsed.chapterPath,
-      chapters,
-      readerState.currentChapterPath || undefined
-    );
-
-    if (targetChapter) {
-      const chapterPath = getChapterPath(targetChapter);
+    if (chapterPath) {
+      const targetChapter = chapters.find((chapter) => chapter.standard_path === chapterPath);
       setReaderState({
-        currentChapterIndex: targetChapter.order,
+        currentChapterIndex: targetChapter?.order ?? readerState.currentChapterIndex,
         currentChapterPath: chapterPath,
         scrollPosition: 0,
-        pendingAnchor: parsed.anchor || null,
+        pendingAnchor: anchor,
       });
     }
   };
@@ -353,6 +326,7 @@ export const EpubReader: React.FC = () => {
     <div className="epub-reader">
       {loading && (
         <div className="reader-loading">
+          <Loader2 className="reader-state-icon is-spinning" size={18} aria-hidden="true" />
           <span>加载中...</span>
         </div>
       )}
@@ -388,17 +362,12 @@ export const EpubReader: React.FC = () => {
             fontSize={readerState.fontSize}
             onFontSizeChange={handleFontSizeChange}
             chapterName={readerState.viewingImagePath || (currentChapter ? getChapterName(currentChapter) : undefined)}
-            isImage={!!readerState.viewingImagePath}
           />
         </>
       )}
     </div>
   );
 };
-
-function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
-}
 
 function escapeHtml(value: string): string {
   return value
@@ -449,18 +418,14 @@ interface ReaderControlsProps {
   fontSize: number;
   onFontSizeChange: (size: number) => void;
   chapterName?: string;
-  isImage?: boolean;
 }
 
 const ReaderControls: React.FC<ReaderControlsProps> = ({
   fontSize,
   onFontSizeChange,
   chapterName,
-  isImage = false,
 }) => {
-  const displayName = isImage && chapterName
-    ? chapterName.split('/').pop() || chapterName
-    : chapterName || '';
+  const displayName = chapterName ? chapterName.split('/').pop() || chapterName : '';
 
   return (
     <div className="reader-controls">

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -23,7 +24,7 @@ pub mod toc_manager;
 pub use extractor::{convert_to_structure_result, extract_chapter_content};
 pub use models::*;
 pub use parser::parse_epub;
-pub use refactor::{convert_to_refactored_result, refactor_epub};
+pub use refactor::refactor_epub;
 pub use resource_manager::extract_refactored_chapter_content;
 pub use storage::{cleanup_ogham_library, export_refactored_epub, get_epub_storage_path};
 pub use toc_manager::TocManager;
@@ -92,7 +93,7 @@ pub fn import_epub(file_path: String) -> Result<EpubInfo, String> {
 
     println!("[INFO] 开始导入并标准化 EPUB: {}", file_path);
     let refactored = refactor_epub(&file_path).map_err(|e| format!("EPUB 标准化失败: {}", e))?;
-    let refactored_structure = convert_to_refactored_result(&refactored);
+    let refactored_structure = refactored_result_from_refactored(&refactored);
     println!(
         "[INFO] EPUB 已导入管理目录: epub_id={}, storage={}",
         refactored.epub_id, refactored.storage_path
@@ -167,7 +168,7 @@ pub async fn refactor_epub_command(epub_path: String) -> Result<RefactoredEpubRe
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    Ok(convert_to_refactored_result(&refactored))
+    Ok(refactored_result_from_refactored(&refactored))
 }
 
 /// 从重构后的 EPUB 获取章节内容
@@ -245,12 +246,93 @@ pub async fn get_image_from_refactored_command(
     Ok(base64_data)
 }
 
+/// 从当前章节解析 EPUB 内部链接，返回标准化后的章节路径和锚点
+#[tauri::command]
+pub async fn resolve_chapter_href_command(
+    epub_id: String,
+    current_chapter_path: Option<String>,
+    href: String,
+) -> Result<ResolvedChapterHrefDto, String> {
+    let storage_path = get_epub_storage_path(&epub_id);
+    let document =
+        opf_document::load_opf_document(&storage_path, &epub_id).map_err(|e| e.to_string())?;
+
+    resolve_chapter_href(&document.manifest, current_chapter_path.as_deref(), &href)
+        .map_err(|e| e.to_string())
+}
+
 /// 加载目录结构（带文件映射）
 #[tauri::command]
 pub async fn load_toc_entries_command(epub_id: String) -> Result<Vec<TocChapterDto>, String> {
     let storage_path = get_epub_storage_path(&epub_id);
 
-    TocManager::load_toc_with_file_mapping(&epub_id, &storage_path).map_err(|e| e.to_string())
+    TocManager::load_toc_from_storage(&storage_path).map_err(|e| e.to_string())
+}
+
+fn resolve_chapter_href(
+    manifest: &StandardManifest,
+    current_chapter_path: Option<&str>,
+    href: &str,
+) -> Result<ResolvedChapterHrefDto, RefactorError> {
+    let trimmed_href = href.trim();
+    if trimmed_href.is_empty() {
+        return Ok(ResolvedChapterHrefDto {
+            chapter_path: None,
+            anchor: None,
+            same_chapter: false,
+        });
+    }
+
+    let (path_part, _) = epub_path::split_reference_suffix(trimmed_href);
+    let anchor = epub_path::reference_anchor(trimmed_href);
+
+    if path_part.is_empty() {
+        return Ok(ResolvedChapterHrefDto {
+            chapter_path: current_chapter_path.map(ToString::to_string),
+            anchor,
+            same_chapter: true,
+        });
+    }
+
+    let resolved_path = resolve_chapter_reference_path(current_chapter_path, path_part);
+    let chapter_path =
+        resolve_manifest_chapter_path(manifest, &resolved_path).ok_or_else(|| {
+            RefactorError::MissingFile(format!("链接目标章节不存在: {}", trimmed_href))
+        })?;
+
+    let same_chapter = current_chapter_path
+        .map(|current| epub_path::casefold(current) == epub_path::casefold(&chapter_path))
+        .unwrap_or(false);
+
+    Ok(ResolvedChapterHrefDto {
+        chapter_path: Some(chapter_path),
+        anchor,
+        same_chapter,
+    })
+}
+
+fn resolve_chapter_reference_path(current_chapter_path: Option<&str>, path_part: &str) -> String {
+    let normalized_path = epub_path::normalize(path_part);
+
+    if normalized_path.starts_with("OEBPS/") || epub_path::has_standard_dir_prefix(&normalized_path)
+    {
+        return epub_path::manifest_path(&normalized_path);
+    }
+
+    let base_dir = current_chapter_path
+        .map(epub_path::parent)
+        .unwrap_or_else(|| "OEBPS/Text".to_string());
+    epub_path::resolve_relative(&base_dir, &normalized_path)
+}
+
+fn resolve_manifest_chapter_path(manifest: &StandardManifest, target_path: &str) -> Option<String> {
+    let target = epub_path::casefold(target_path);
+    manifest
+        .items
+        .iter()
+        .filter(|item| is_renderable_chapter_item(item))
+        .map(|item| format!("OEBPS/{}", item.href))
+        .find(|standard_path| epub_path::casefold(standard_path) == target)
 }
 
 /// 更新目录顺序并同步到 OPF 和导航文件
@@ -363,31 +445,77 @@ pub async fn reload_epub_structure_command(
     epub_id: String,
 ) -> Result<RefactoredEpubResult, String> {
     let storage_path = get_epub_storage_path(&epub_id);
-    let oebps_path = Path::new(&storage_path).join("OEBPS");
+    load_refactored_result_from_cache(&epub_id, &storage_path)
+}
+
+fn load_refactored_result_from_cache(
+    epub_id: &str,
+    storage_path: &str,
+) -> Result<RefactoredEpubResult, String> {
+    let oebps_path = Path::new(storage_path).join("OEBPS");
 
     if !oebps_path.exists() {
         return Err(format!("EPUB 缓存目录不存在: {}", oebps_path.display()));
     }
 
     let _workspace_metadata =
-        storage::load_workspace_metadata(&storage_path).map_err(|e| e.to_string())?;
+        storage::load_workspace_metadata(storage_path).map_err(|e| e.to_string())?;
 
     let opf_document =
-        opf_document::load_opf_document(&storage_path, &epub_id).map_err(|e| e.to_string())?;
+        opf_document::load_opf_document(storage_path, epub_id).map_err(|e| e.to_string())?;
     let metadata = opf_document.metadata;
     let manifest = opf_document.manifest;
     let spine = opf_document.spine;
 
-    // 加载导航
-    let navigation = load_navigation_from_cache(&oebps_path)?;
+    // 加载导航。所有缓存读取入口都通过 TocManager，避免 nav.xhtml、toc.ncx 和前端 TOC
+    // 各自解析出不同结构。
+    let navigation = load_navigation_from_cache(storage_path)?;
 
-    // 构建 StandardEpubStructure
+    let structure = build_standard_epub_structure(&manifest, &spine, navigation);
+
+    resource_index::load_or_refresh_resource_index(epub_id, storage_path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(RefactoredEpubResult {
+        epub_id: epub_id.to_string(),
+        metadata,
+        structure,
+        storage_path: storage_path.to_string(),
+    })
+}
+
+fn refactored_result_from_refactored(refactored: &RefactoredEpub) -> RefactoredEpubResult {
+    let navigation = toc_entries_to_navigation_entries(&refactored.navigation.toc);
+    let structure =
+        build_standard_epub_structure(&refactored.manifest, &refactored.spine, navigation);
+
+    RefactoredEpubResult {
+        epub_id: refactored.epub_id.clone(),
+        metadata: refactored.metadata.clone(),
+        structure,
+        storage_path: refactored.storage_path.clone(),
+    }
+}
+
+fn build_standard_epub_structure(
+    manifest: &StandardManifest,
+    spine: &StandardSpine,
+    navigation: Vec<NavigationEntry>,
+) -> StandardEpubStructure {
+    let title_by_href = collect_navigation_titles_by_href(&navigation);
+    let spine_order_by_id: HashMap<&str, usize> = spine
+        .itemrefs
+        .iter()
+        .enumerate()
+        .map(|(index, spine_item)| (spine_item.idref.as_str(), index))
+        .collect();
+
     let chapters: Vec<StandardChapter> = manifest
         .items
         .iter()
         .filter(|item| is_renderable_chapter_item(item))
         .filter_map(|item| {
-            let title = find_navigation_title(&navigation, &item.href);
+            let title = title_by_href.get(&epub_path::casefold(&item.href)).cloned();
 
             let original_filename = item
                 .href
@@ -397,10 +525,9 @@ pub async fn reload_epub_structure_command(
                 .to_string();
             let standard_path = format!("OEBPS/{}", item.href);
 
-            let order = spine
-                .itemrefs
-                .iter()
-                .position(|spine_item| spine_item.idref == item.id)
+            let order = spine_order_by_id
+                .get(item.id.as_str())
+                .copied()
                 .unwrap_or(spine.itemrefs.len());
 
             Some(StandardChapter {
@@ -427,7 +554,7 @@ pub async fn reload_epub_structure_command(
         .map(|item| format!("OEBPS/{}", item.href))
         .collect();
 
-    let structure = StandardEpubStructure {
+    StandardEpubStructure {
         chapters,
         styles,
         images,
@@ -449,17 +576,7 @@ pub async fn reload_epub_structure_command(
             .map(|item| format!("OEBPS/{}", item.href))
             .collect(),
         navigation,
-    };
-
-    resource_index::load_or_refresh_resource_index(&epub_id, &storage_path)
-        .map_err(|e| e.to_string())?;
-
-    Ok(RefactoredEpubResult {
-        epub_id: epub_id.clone(),
-        metadata,
-        structure,
-        storage_path,
-    })
+    }
 }
 
 /// 读取当前管理目录中的全局资源关系索引；不存在或 epub_id 不匹配时自动重建
@@ -471,240 +588,38 @@ pub async fn load_resource_index_command(epub_id: String) -> Result<ResourceInde
 }
 
 /// 从缓存目录加载导航结构
-fn load_navigation_from_cache(oebps_path: &Path) -> Result<Vec<NavigationEntry>, String> {
-    let nav_path = oebps_path.join("nav.xhtml");
-    let ncx_path = oebps_path.join("toc.ncx");
-
-    let toc: Vec<NavigationEntry> = if nav_path.exists() {
-        let content =
-            fs::read_to_string(&nav_path).map_err(|e| format!("无法读取 nav.xhtml: {}", e))?;
-
-        // 解析 nav.xhtml
-        let mut entries = Vec::new();
-        let mut order_counter = 0usize;
-        parse_nav_xhtml(&content, 0, &mut entries, &mut order_counter, "");
-        entries
-    } else if ncx_path.exists() {
-        let content =
-            fs::read_to_string(&ncx_path).map_err(|e| format!("无法读取 toc.ncx: {}", e))?;
-
-        // 解析 toc.ncx
-        let mut entries = Vec::new();
-        let mut order_counter = 0usize;
-        parse_toc_ncx(&content, 0, &mut entries, &mut order_counter, "");
-        entries
-    } else {
-        Vec::new()
-    };
-
-    Ok(toc)
-}
-
-/// 解析 nav.xhtml
-fn parse_nav_xhtml(
-    content: &str,
-    level: usize,
-    entries: &mut Vec<NavigationEntry>,
-    order_counter: &mut usize,
-    _base_path: &str,
-) {
-    // 查找所有 <li> 元素
-    let mut search_pos = 0;
-    while let Some(li_start) = content[search_pos..].find("<li") {
-        let li_start = search_pos + li_start;
-        let li_end = match find_matching_close_tag(&content[li_start..], "<li", "</li>") {
-            Some(end) => li_start + end,
-            None => {
-                search_pos = li_start + 3;
-                continue;
-            }
-        };
-
-        let li_content = &content[li_start..li_end];
-
-        if let Some(a_start) = li_content.find("<a ") {
-            if let Some(a_end) = li_content[a_start..].find("</a>") {
-                let a_content = &li_content[a_start..a_start + a_end + 4];
-
-                let href = extract_html_attr(a_content, "href").unwrap_or_default();
-                let label =
-                    extract_text_content(a_content).unwrap_or_else(|| "Untitled".to_string());
-
-                if !href.is_empty() || !label.is_empty() {
-                    let order = *order_counter;
-                    *order_counter += 1;
-
-                    let mut children = Vec::new();
-                    if let Some(ol_start) = li_content.find("<ol") {
-                        let ol_end =
-                            find_matching_close_tag(&li_content[ol_start..], "<ol", "</ol>")
-                                .map(|end| ol_start + end)
-                                .unwrap_or(li_content.len());
-                        let ol_content = &li_content[ol_start..ol_end];
-                        parse_nav_xhtml(ol_content, level + 1, &mut children, order_counter, "");
-                    }
-
-                    entries.push(NavigationEntry {
-                        id: format!("nav-{}", order),
-                        label,
-                        content_src: href,
-                        level,
-                        children,
-                    });
-                }
-            }
-        }
-
-        search_pos = li_end;
+fn load_navigation_from_cache(storage_path: &str) -> Result<Vec<NavigationEntry>, String> {
+    match TocManager::load_toc_from_storage(storage_path) {
+        Ok(entries) => Ok(toc_chapters_to_navigation(&entries)),
+        Err(RefactorError::MissingFile(_)) => Ok(Vec::new()),
+        Err(error) => Err(error.to_string()),
     }
 }
 
-/// 解析 toc.ncx
-fn parse_toc_ncx(
-    content: &str,
-    level: usize,
-    entries: &mut Vec<NavigationEntry>,
-    order_counter: &mut usize,
-    _base_path: &str,
-) {
-    let nav_map_start = match content.find("<navMap") {
-        Some(pos) => pos,
-        None => return,
-    };
-
-    let nav_map_content = &content[nav_map_start..];
-    let mut search_pos = 0;
-
-    while let Some(point_start) = nav_map_content[search_pos..].find("<navPoint") {
-        let point_start = search_pos + point_start;
-        let point_end =
-            find_matching_close_tag(&nav_map_content[point_start..], "<navPoint", "</navPoint>")
-                .map(|end| point_start + end)
-                .unwrap_or(nav_map_content.len());
-
-        let nav_point_content = &nav_map_content[point_start..point_end];
-
-        let id = extract_xml_attr(nav_point_content, "id")
-            .unwrap_or_else(|| format!("navpoint-{}", *order_counter));
-        let label = extract_nav_label(nav_point_content).unwrap_or_else(|| "Untitled".to_string());
-        let content_src = extract_ncx_content_src(nav_point_content).unwrap_or_default();
-
-        let mut children = Vec::new();
-        parse_toc_ncx(
-            nav_point_content,
-            level + 1,
-            &mut children,
-            order_counter,
-            "",
-        );
-
-        *order_counter += 1;
-
-        entries.push(NavigationEntry {
-            id,
-            label,
-            content_src,
-            level,
-            children,
-        });
-
-        search_pos = point_end;
-    }
+fn toc_chapters_to_navigation(entries: &[TocChapterDto]) -> Vec<NavigationEntry> {
+    entries
+        .iter()
+        .map(|entry| NavigationEntry {
+            id: entry.id.clone(),
+            label: entry.label.clone(),
+            content_src: entry.content_src.clone(),
+            level: entry.level,
+            children: toc_chapters_to_navigation(&entry.children),
+        })
+        .collect()
 }
 
-/// 查找匹配的闭合标签
-fn find_matching_close_tag(content: &str, open_tag: &str, close_tag: &str) -> Option<usize> {
-    let mut depth = 0;
-    let mut search_pos = 0;
-    let open_lower = open_tag.to_lowercase();
-    let close_lower = close_tag.to_lowercase();
-
-    while search_pos < content.len() {
-        if let Some(c) = content[search_pos..].chars().next() {
-            let char_len = c.len_utf8();
-            let lower = content[search_pos..].to_lowercase();
-
-            if lower.starts_with(&open_lower) {
-                depth += 1;
-                search_pos += open_tag.len();
-            } else if lower.starts_with(&close_lower) {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(search_pos + close_tag.len());
-                }
-                search_pos += close_tag.len();
-            } else {
-                search_pos += char_len;
-            }
-        } else {
-            break;
-        }
-    }
-
-    None
-}
-
-/// 提取 XML 属性
-fn extract_xml_attr(content: &str, attr_name: &str) -> Option<String> {
-    let pattern = format!("{}=\"", attr_name);
-    if let Some(start) = content.find(&pattern) {
-        let value_start = start + pattern.len();
-        if let Some(end) = content[value_start..].find('"') {
-            return Some(content[value_start..value_start + end].to_string());
-        }
-    }
-    None
-}
-
-/// 提取 HTML 属性
-fn extract_html_attr(content: &str, attr_name: &str) -> Option<String> {
-    let pattern = format!("{}=\"", attr_name);
-    if let Some(start) = content.find(&pattern) {
-        let value_start = start + pattern.len();
-        if let Some(end) = content[value_start..].find('"') {
-            return Some(content[value_start..value_start + end].to_string());
-        }
-    }
-    None
-}
-
-/// 提取文本内容
-fn extract_text_content(content: &str) -> Option<String> {
-    if let Some(start) = content.find('>') {
-        let text = &content[start + 1..];
-        if let Some(end) = text.find("</a>") {
-            let text = text[..end].trim();
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// 提取 nav label
-fn extract_nav_label(content: &str) -> Option<String> {
-    if let Some(text_start) = content.find("<text>") {
-        if let Some(text_end) = content[text_start..].find("</text>") {
-            return Some(
-                content[text_start + 6..text_start + text_end]
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    None
-}
-
-/// 提取 NCX content src
-fn extract_ncx_content_src(content: &str) -> Option<String> {
-    if let Some(content_start) = content.find("<content src=\"") {
-        let value_start = content_start + 14;
-        if let Some(quote_end) = content[value_start..].find('"') {
-            return Some(content[value_start..value_start + quote_end].to_string());
-        }
-    }
-    None
+fn toc_entries_to_navigation_entries(entries: &[TocEntry]) -> Vec<NavigationEntry> {
+    entries
+        .iter()
+        .map(|entry| NavigationEntry {
+            id: entry.id.clone(),
+            label: entry.label.clone(),
+            content_src: entry.content_src.clone(),
+            level: entry.level,
+            children: toc_entries_to_navigation_entries(&entry.children),
+        })
+        .collect()
 }
 
 fn is_renderable_chapter_item(item: &StandardManifestItem) -> bool {
@@ -717,24 +632,98 @@ fn is_renderable_chapter_item(item: &StandardManifestItem) -> bool {
             .unwrap_or(false)
 }
 
-fn find_navigation_title(entries: &[NavigationEntry], href: &str) -> Option<String> {
-    let normalized_href = href.split('#').next().unwrap_or(href);
+fn collect_navigation_titles_by_href(entries: &[NavigationEntry]) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    collect_navigation_titles_by_href_recursive(entries, &mut titles);
+    titles
+}
 
+fn collect_navigation_titles_by_href_recursive(
+    entries: &[NavigationEntry],
+    titles: &mut HashMap<String, String>,
+) {
     for entry in entries {
-        if entry
-            .content_src
-            .split('#')
-            .next()
-            .unwrap_or(&entry.content_src)
-            == normalized_href
-        {
-            return Some(entry.label.clone());
+        let href = epub_path::casefold(&entry.content_src);
+        if !href.is_empty() {
+            titles.entry(href).or_insert_with(|| entry.label.clone());
         }
 
-        if let Some(title) = find_navigation_title(&entry.children, href) {
-            return Some(title);
+        collect_navigation_titles_by_href_recursive(&entry.children, titles);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_manifest() -> StandardManifest {
+        StandardManifest {
+            items: vec![
+                chapter_item("chapter-1", "Text/ch1.xhtml"),
+                chapter_item("chapter-2", "Text/ch2.xhtml"),
+                StandardManifestItem {
+                    id: "nav".to_string(),
+                    href: "nav.xhtml".to_string(),
+                    media_type: "application/xhtml+xml".to_string(),
+                    properties: Some(vec!["nav".to_string()]),
+                },
+            ],
         }
     }
 
-    None
+    fn chapter_item(id: &str, href: &str) -> StandardManifestItem {
+        StandardManifestItem {
+            id: id.to_string(),
+            href: href.to_string(),
+            media_type: "application/xhtml+xml".to_string(),
+            properties: None,
+        }
+    }
+
+    #[test]
+    fn resolves_current_chapter_relative_href() {
+        let resolved = resolve_chapter_href(
+            &test_manifest(),
+            Some("OEBPS/Text/ch1.xhtml"),
+            "ch2.xhtml#p2",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.chapter_path.as_deref(),
+            Some("OEBPS/Text/ch2.xhtml")
+        );
+        assert_eq!(resolved.anchor.as_deref(), Some("p2"));
+        assert!(!resolved.same_chapter);
+    }
+
+    #[test]
+    fn resolves_opf_relative_text_href_without_double_text_prefix() {
+        let resolved = resolve_chapter_href(
+            &test_manifest(),
+            Some("OEBPS/Text/ch1.xhtml"),
+            "Text/ch2.xhtml?x=1#p2",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.chapter_path.as_deref(),
+            Some("OEBPS/Text/ch2.xhtml")
+        );
+        assert_eq!(resolved.anchor.as_deref(), Some("p2"));
+        assert!(!resolved.same_chapter);
+    }
+
+    #[test]
+    fn resolves_fragment_only_href_to_current_chapter() {
+        let resolved =
+            resolve_chapter_href(&test_manifest(), Some("OEBPS/Text/ch1.xhtml"), "#p1").unwrap();
+
+        assert_eq!(
+            resolved.chapter_path.as_deref(),
+            Some("OEBPS/Text/ch1.xhtml")
+        );
+        assert_eq!(resolved.anchor.as_deref(), Some("p1"));
+        assert!(resolved.same_chapter);
+    }
 }

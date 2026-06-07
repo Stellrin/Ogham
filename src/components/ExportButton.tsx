@@ -3,6 +3,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { useEpubStore } from '../store/epubStore';
 import './ExportButton.css';
+import { Loader2, Package } from 'lucide-react';
 
 export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
   epubId,
@@ -65,7 +66,11 @@ export const ExportButton: React.FC<{ epubId: string; epubName: string }> = ({
       disabled={exporting}
       title="导出重构后的 EPUB 文件"
     >
-      <span className="export-icon">{exporting ? '⏳' : '📦'}</span>
+      {exporting ? (
+        <Loader2 className="export-icon is-spinning" size={13} aria-hidden="true" />
+      ) : (
+        <Package className="export-icon" size={13} aria-hidden="true" />
+      )}
       {exporting ? '导出中...' : '导出'}
     </button>
   );

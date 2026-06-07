@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix, for example 0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-portable:
+    name: Build Windows portable exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Version '$version' must look like 0.1.0 or 0.1.0-beta.1"
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Sync app version from release tag
+        shell: pwsh
+        run: |
+          npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+          node -e "const fs = require('fs'); const version = process.argv[1]; const file = 'src-tauri/tauri.conf.json'; const config = JSON.parse(fs.readFileSync(file, 'utf8')); config.version = version; fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');" ${{ steps.version.outputs.version }}
+          $cargoToml = Get-Content "src-tauri/Cargo.toml" -Raw
+          $cargoToml = $cargoToml -replace '(?m)^version = ".+"', 'version = "${{ steps.version.outputs.version }}"'
+          Set-Content "src-tauri/Cargo.toml" -Value $cargoToml -NoNewline
+
+      - name: Build portable executable
+        run: npm run tauri -- build --no-bundle --ci
+
+      - name: Prepare release asset
+        id: asset
+        shell: pwsh
+        run: |
+          $exe = Get-Item "src-tauri/target/release/ogham.exe" -ErrorAction SilentlyContinue
+
+          if (-not $exe) {
+            throw "No portable .exe was found at src-tauri/target/release/ogham.exe"
+          }
+
+          $assetName = "Ogham_${{ steps.version.outputs.version }}_windows_portable.exe"
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          Copy-Item -LiteralPath $exe.FullName -Destination "release-assets/$assetName"
+
+          "path=release-assets/$assetName" >> $env:GITHUB_OUTPUT
+          "name=$assetName" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Ogham ${{ steps.version.outputs.version }}
+          files: ${{ steps.asset.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            Windows portable executable only. This release does not include an installer.
+
+            If the app does not start on a fresh Windows installation, install the Microsoft Edge WebView2 Runtime and try again.

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './Toolbar.css';
+import { ChevronDown, FileImage, Loader2, Settings2 } from 'lucide-react';
 
 export type ConversionMode = 's2t' | 't2s';
 
@@ -115,9 +116,9 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             aria-haspopup="menu"
             aria-expanded={isToolsMenuOpen}
           >
-            <span className="toolbar-icon" aria-hidden="true">⚙</span>
+            <Settings2 className="toolbar-icon" size={15} aria-hidden="true" />
             <span className="toolbar-label">工具</span>
-            <span className="toolbar-caret" aria-hidden="true">▾</span>
+            <ChevronDown className="toolbar-caret" size={13} aria-hidden="true" />
           </button>
 
           {isToolsMenuOpen && (
@@ -161,7 +162,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
                   disabled={!canUseTools}
                   role="menuitem"
                 >
-                  <span className="toolbar-menu-icon">图</span>
+                  <FileImage className="toolbar-menu-icon toolbar-menu-svg" size={15} aria-hidden="true" />
                   <span className="toolbar-menu-copy">
                     <span className="toolbar-menu-label">处理图片链接</span>
                   </span>
@@ -175,7 +176,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       {isBusy && (
         <div className="toolbar-status" title={isProcessingImages ? imageStatusTitle : progressDetail}>
           <div className="toolbar-status-main">
-            <span className="toolbar-status-dot" aria-hidden="true" />
+            <Loader2 className="toolbar-status-dot is-spinning" size={13} aria-hidden="true" />
             <span className="toolbar-status-text">{progressLabel}</span>
           </div>
           <div className="toolbar-progress-bar" aria-hidden="true">

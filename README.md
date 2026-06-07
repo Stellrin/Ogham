@@ -1,85 +1,58 @@
-# Ogham - EPUB 小说管理器
+# Ogham
 
-Ogham 是一个基于 Tauri 2 的桌面 EPUB 小说管理器，用于导入、标准化、阅读、整理并导出 EPUB 文件。它会把不同来源的 EPUB 拆解到统一的管理目录中，再围绕标准化后的结构进行阅读、目录维护、资源处理和导出。
+Ogham is a desktop EPUB novel manager built with Tauri, React, and Rust. It helps you import EPUB files, normalize their internal structure, read and inspect chapters, maintain the table of contents, process resources, and export the book again as a clean EPUB package.
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-18.3-blue)](https://react.dev/)
+[![React](https://img.shields.io/badge/React-18-blue)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-## 核心功能
+## Why Ogham
 
-- **导入与标准化**：验证 EPUB 文件，解析元数据、manifest、spine、目录和资源，并整理为统一的 `OEBPS` 结构。
-- **结构浏览**：以文件树查看章节、样式、图片等资源，也可以切换到目录视图查看 TOC。
-- **内置阅读器**：渲染章节 HTML，支持字号调整、滚动位置恢复、章节跳转和图片查看。
-- **目录维护**：支持加载目录、更新目录项标题、调整目录项关联文件和顺序。
-- **文本转换**：支持简体转繁体、繁体转简体，并显示转换进度。
-- **图片链接处理**：扫描章节中的图片链接，下载并写入 `OEBPS/Images`，同步更新 OPF manifest。
-- **资源索引**：维护资源引用关系，辅助检查章节、样式、图片、字体等资源的路径关系。
-- **导出 EPUB**：将管理目录重新打包为标准 EPUB 文件，保留元数据和整理后的结构。
+EPUB novels often come from different generators, websites, archives, and personal workflows. Their chapters, images, stylesheets, navigation files, and resource references can be scattered across inconsistent folder layouts.
 
-## 快速开始
+Ogham treats an EPUB as a manageable project. When a book is imported, it is unpacked into a standardized EPUB workspace so the application can read, inspect, update, and repackage it with fewer surprises.
 
-### 环境要求
+## Features
 
-- Node.js 与 npm
-- Rust 工具链
-- Tauri 2 所需的系统依赖
+- Import EPUB files and normalize them into a predictable `OEBPS` layout.
+- Browse chapters, stylesheets, images, fonts, OPF files, NCX files, and EPUB navigation files.
+- Read chapters in the built-in reader with chapter navigation, font-size controls, scroll restoration, and image preview.
+- View and maintain the table of contents, including item titles, linked chapter files, and ordering.
+- Convert chapter text between Simplified and Traditional Chinese.
+- Scan chapter content for remote image links, download images, store them in `OEBPS/Images`, and update EPUB references.
+- Build a resource index for chapters, styles, images, fonts, and cross-resource references.
+- Export the managed workspace back into a standard EPUB archive.
 
-### 安装依赖
+## How It Works
+
+1. Choose an EPUB file from the desktop app.
+2. Ogham validates and extracts the package into its managed library.
+3. Chapters and resources are reorganized into a standard structure under `OEBPS/`.
+4. The app works against the normalized files instead of the original EPUB internals.
+5. After edits or processing, the managed structure can be exported as a new EPUB file.
+
+## Getting Started
+
+Ogham is currently developed as a Tauri desktop app. The main development entry point is:
 
 ```bash
 npm install
-```
-
-### 开发运行
-
-```bash
 npm run tauri dev
 ```
 
-这是主要的桌面调试入口，会同时启动 Vite 前端服务和 Tauri 应用。`npm run dev` 只会启动 Vite 前端服务，不能代表完整的桌面端行为。
+For setup notes, architecture details, EPUB structure conventions, and validation guidance, see [Docs/Development.md](Docs/Development.md).
 
-### 构建
+## Technology
 
-```bash
-npm run build
-npm run tauri build
-```
+- Frontend: React, TypeScript, Vite, Zustand, Tauri JavaScript APIs
+- Backend: Rust, Tauri 2, ZIP and XML processing, EPUB parsing, Chinese text conversion, image downloading
 
-`npm run build` 会执行 TypeScript 检查并构建前端资源。`npm run tauri build` 会构建桌面应用安装包。
+## Documentation
 
-## 技术栈
+- [Development notes](Docs/Development.md)
+- [EPUB tips](Docs/tips.md)
 
-### 前端
+## License
 
-- React 18 + TypeScript
-- Vite 6
-- Zustand
-- Tauri JavaScript API 与官方插件
-
-### 后端
-
-- Rust
-- Tauri 2
-- `zip`：EPUB/ZIP 归档处理
-- `quick-xml`：OPF、NCX、NAV 等 XML/XHTML 处理
-- `epub`：EPUB 解析辅助
-- `zhconv`：简繁转换
-- `reqwest`：图片下载
-
-## 项目结构
-
-```text
-src/
-  components/        React 组件
-  store/             Zustand 状态与 Tauri command 调用
-  utils/             EPUB 路径处理工具
-src-tauri/
-  src/epub/          EPUB 解析、标准化、目录、资源、导出逻辑
-  capabilities/      Tauri 权限配置
-  tauri.conf.json    Tauri 应用配置
-```
-
-## 许可证
-
-本项目采用 MIT License，详见 [LICENSE](LICENSE)。
+Ogham is released under the [MIT License](LICENSE).

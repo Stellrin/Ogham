@@ -1,6 +1,7 @@
 import React from 'react';
 import { useEpubStore } from '../store/epubStore';
 import { ExportButton } from './ExportButton';
+import { BookOpenText, X } from 'lucide-react';
 
 export const EpubList: React.FC = () => {
   const { epubs, selectedEpubId, selectEpub, removeEpub } = useEpubStore();
@@ -26,6 +27,7 @@ export const EpubList: React.FC = () => {
                 onClick={() => selectEpub(epub.id)}
               >
                 <div className="epub-item-info">
+                  <BookOpenText className="epub-item-icon" size={16} aria-hidden="true" />
                   <span className="epub-name">{epub.name}</span>
                   <span className="epub-path">{epub.path}</span>
                 </div>
@@ -38,8 +40,9 @@ export const EpubList: React.FC = () => {
                       removeEpub(epub.id);
                     }}
                     title="删除"
+                    aria-label={`删除 ${epub.name}`}
                   >
-                    ×
+                    <X size={14} aria-hidden="true" />
                   </button>
                 </div>
               </li>

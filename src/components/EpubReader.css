@@ -1,97 +1,117 @@
 .epub-reader {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #fafafa;
   position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
   overflow: hidden;
+  background-color: var(--panel-bg);
 }
 
 .reader-iframe {
+  width: min(736px, calc(100% - 48px));
+  min-height: 0;
   flex: 1;
+  align-self: center;
   border: none;
-  width: 100%;
-  height: 100%;
-  background-color: #ffffff;
+  background-color: var(--panel-bg);
 }
 
 .reader-loading,
 .reader-error,
 .reader-empty {
   position: absolute;
-  top: 50%;
+  top: 44%;
   left: 50%;
-  transform: translate(-50%, -50%);
-  padding: 20px 40px;
-  background-color: rgba(255, 255, 255, 0.95);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  font-size: 14px;
-  color: #666;
-  text-align: center;
   z-index: 10;
+  display: flex;
+  width: min(560px, calc(100% - 48px));
+  flex-direction: column;
+  gap: 4px;
+  transform: translate(-50%, -50%);
+  padding: 12px 12px;
+  border-radius: 14px;
+  background-color: var(--muted-bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.reader-loading {
+  width: auto;
+  min-width: 160px;
+  align-items: center;
+  flex-direction: row;
+  justify-content: center;
 }
 
 .reader-error {
-  color: #d9534f;
+  color: var(--danger);
+}
+
+.reader-state-icon {
+  color: var(--accent);
 }
 
 .reader-empty p {
-  margin: 8px 0;
+  margin: 0;
 }
 
 .reader-empty .hint {
-  font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .reader-controls {
   display: flex;
+  width: 100%;
+  min-height: 38px;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  background-color: #ffffff;
-  border-top: 1px solid #e0e0e0;
   gap: 12px;
+  align-self: stretch;
+  margin: 0;
+  padding: 5px 12px;
+  border-top: 1px solid var(--line);
+  background-color: var(--panel-bg);
   flex-shrink: 0;
 }
 
 .reader-nav-button {
-  padding: 8px 16px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #4a90d9;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
   background-color: transparent;
-  border: 1px solid #4a90d9;
-  border-radius: 4px;
+  color: var(--text);
   cursor: pointer;
-  transition: all 0.2s ease;
+  font-size: 13px;
+  font-weight: 500;
   white-space: nowrap;
+  transition: background-color 0.12s ease;
 }
 
 .reader-nav-button:hover:not(:disabled) {
-  color: #ffffff;
-  background-color: #4a90d9;
+  background-color: var(--muted-bg);
 }
 
 .reader-nav-button:disabled {
-  color: #ccc;
-  border-color: #ccc;
+  color: var(--text-soft);
   cursor: not-allowed;
 }
 
 .reader-info {
+  display: flex;
+  min-width: 0;
   flex: 1;
-  text-align: center;
+  align-items: center;
+  color: var(--text-muted);
   overflow: hidden;
 }
 
 .reader-chapter-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
   display: inline-block;
   max-width: 100%;
+  color: var(--text-muted);
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -104,22 +124,24 @@
 }
 
 .font-size-select {
-  padding: 6px 12px;
-  font-size: 14px;
-  color: #333;
-  background-color: #ffffff;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  min-height: 28px;
+  padding: 3px 26px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--panel-bg);
+  color: var(--text);
   cursor: pointer;
-  transition: border-color 0.2s ease;
+  font: inherit;
+  font-size: 13px;
+  transition: background-color 0.12s ease;
 }
 
 .font-size-select:hover {
-  border-color: #4a90d9;
+  background-color: var(--muted-bg);
 }
 
 .font-size-select:focus {
+  border-color: var(--line-strong);
   outline: none;
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.1);
+  box-shadow: 0 0 0 2px rgba(255, 90, 31, 0.12);
 }

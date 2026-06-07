@@ -24,7 +24,6 @@ dist-ssr
 *.sw?
 
 books
-tips.md
 *.bat
 
 CLAUDE.md

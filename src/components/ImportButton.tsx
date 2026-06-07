@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEpubStore } from '../store/epubStore';
+import { FilePlus2, Loader2 } from 'lucide-react';
 
 export const ImportButton: React.FC = () => {
   const importEpubFromPath = useEpubStore((state) => state.importEpubFromPath);
@@ -46,8 +47,13 @@ export const ImportButton: React.FC = () => {
       className="import-button"
       onClick={handleImport}
       disabled={importing}
+      title={importing ? '正在导入 EPUB' : '导入 EPUB'}
     >
-      <span className="import-icon">{importing ? '⏳' : '+'}</span>
+      {importing ? (
+        <Loader2 className="import-icon is-spinning" size={15} aria-hidden="true" />
+      ) : (
+        <FilePlus2 className="import-icon" size={15} aria-hidden="true" />
+      )}
       {importing ? '导入中...' : '导入 EPUB'}
     </button>
   );
